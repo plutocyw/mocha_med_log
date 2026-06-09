@@ -4,6 +4,7 @@
   "account_id": "83170f7d4c8d2e8904d8d3f417726504",
   "main": "src/worker.ts",
   "compatibility_date": "2026-06-08",
+  "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
