@@ -18,6 +18,13 @@ The settings page also supports:
 
 - changing medication time for a specific future date and slot
 - skipping specific future slots entirely, for example during boarding
+- applying overrides or skips across a future date range in one batch
+
+The app navigation is split into:
+
+- `Home`: daily logging and history lookup
+- `Stats`: date-range charts for time accuracy and user breakdown
+- `Settings`: future overrides, boarding skips, and batch updates
 
 ## Stack
 

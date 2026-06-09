@@ -72,6 +72,14 @@ type DayStats = {
   minLatenessMinutes: number | null;
 };
 
+type StatsPoint = {
+  date: string;
+  completedCount: number;
+  pendingCount: number;
+  skippedCount: number;
+  averageLatenessMinutes: number | null;
+};
+
 const COOKIE_NAME = 'mocha_med_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const DEFAULT_TIMEZONE = 'America/Los_Angeles';
@@ -141,6 +149,14 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
 
     if (request.method === 'POST' && url.pathname === '/api/settings/slot') {
       return saveSettingsSlot(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/settings/batch') {
+      return saveBatchSettings(request, env);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/stats') {
+      return statsView(env, url);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/push/subscribe') {
@@ -343,6 +359,24 @@ async function settingsView(env: Env, url: URL): Promise<Response> {
   return json(settings);
 }
 
+async function statsView(env: Env, url: URL): Promise<Response> {
+  const timezone = getTimezone(env);
+  const todayDate = getLocalDateTime(new Date(), timezone).date;
+  const startDate = String(url.searchParams.get('start') ?? '').trim() || TRACKING_START_DATE;
+  const endDate = String(url.searchParams.get('end') ?? '').trim() || todayDate;
+
+  if (!isIsoDate(startDate) || !isIsoDate(endDate) || startDate > endDate) {
+    return json({ error: 'Invalid stats range.' }, 400);
+  }
+
+  if (startDate < TRACKING_START_DATE || endDate > todayDate) {
+    return json({ error: 'Stats range is out of bounds.' }, 400);
+  }
+
+  const stats = await getStatsData(env.DB, timezone, startDate, endDate);
+  return json(stats);
+}
+
 async function saveSettingsSlot(request: Request, env: Env): Promise<Response> {
   const timezone = getTimezone(env);
   const todayDate = getLocalDateTime(new Date(), timezone).date;
@@ -412,6 +446,63 @@ async function saveSettingsSlot(request: Request, env: Env): Promise<Response> {
   const settings = await getSettingsData(env.DB, slotDate, timezone, todayDate);
   const day = await getDayData(env.DB, slotDate, timezone);
   return json({ settings, day });
+}
+
+async function saveBatchSettings(request: Request, env: Env): Promise<Response> {
+  const timezone = getTimezone(env);
+  const todayDate = getLocalDateTime(new Date(), timezone).date;
+  const body = await request.json<{
+    startDate?: string;
+    endDate?: string;
+    slots?: Array<{
+      slotKey?: string;
+      time?: string | null;
+      skipped?: boolean;
+      reason?: string | null;
+    }>;
+  }>().catch(() => null);
+
+  const startDate = String(body?.startDate ?? '').trim();
+  const endDate = String(body?.endDate ?? '').trim();
+  const slots = Array.isArray(body?.slots) ? body!.slots : [];
+
+  if (!isIsoDate(startDate) || !isIsoDate(endDate) || startDate > endDate || startDate < todayDate) {
+    return json({ error: 'Batch settings require a valid future date range.' }, 400);
+  }
+
+  if (!slots.length) {
+    return json({ error: 'At least one slot change is required.' }, 400);
+  }
+
+  const dates = enumerateDateRange(startDate, endDate);
+  for (const date of dates) {
+    for (const slot of slots) {
+      const slotKey = String(slot.slotKey ?? '').trim();
+      const base = SLOT_DEFINITIONS.find((item) => item.key === slotKey);
+      if (!base) {
+        return json({ error: `Invalid slot key: ${slotKey}` }, 400);
+      }
+
+      const time = slot.time === null ? null : String(slot.time ?? '').trim();
+      if (time && !isTimeString(time)) {
+        return json({ error: `Invalid time for ${slotKey}` }, 400);
+      }
+
+      await applySlotSetting(env.DB, {
+        slotDate: date,
+        slotKey,
+        baseTime: base.time,
+        time,
+        skipped: !!slot.skipped,
+        reason: slot.reason ? String(slot.reason).trim() : null,
+      });
+    }
+
+    await ensureSlotsForDate(env.DB, date);
+  }
+
+  const settings = await getSettingsData(env.DB, startDate, timezone, todayDate);
+  return json({ settings });
 }
 
 async function savePushSubscription(
@@ -904,6 +995,133 @@ async function getSettingsData(
   };
 }
 
+async function getStatsData(
+  db: D1Database,
+  timezone: string,
+  startDate: string,
+  endDate: string,
+) {
+  for (const date of enumerateDateRange(startDate, endDate)) {
+    await ensureSlotsForDate(db, date);
+  }
+
+  const rows = await db.prepare(
+    `SELECT
+      slots.id,
+      slots.slot_date,
+      slots.slot_key,
+      slots.slot_label,
+      slots.slot_time,
+      slots.status,
+      slots.completed_at,
+      users.name AS completed_by_name,
+      slots.last_notified_at
+     FROM slots
+     LEFT JOIN users ON users.id = slots.completed_by_user_id
+     WHERE slots.slot_date >= ?1 AND slots.slot_date <= ?2
+     ORDER BY slots.slot_date ASC, slots.slot_time ASC`,
+  )
+    .bind(startDate, endDate)
+    .all<SlotRow>();
+
+  const mapped = rows.results.map((row) => mapSlotRow(row, timezone));
+  const byDate = new Map<string, ReturnType<typeof mapSlotRow>[]>();
+  for (const row of mapped) {
+    const arr = byDate.get(row.date) ?? [];
+    arr.push(row);
+    byDate.set(row.date, arr);
+  }
+
+  const perDay: StatsPoint[] = enumerateDateRange(startDate, endDate).map((date) => {
+    const slots = byDate.get(date) ?? [];
+    const stats = summarizeDay(slots);
+    return {
+      date,
+      completedCount: stats.completedCount,
+      pendingCount: stats.pendingCount,
+      skippedCount: stats.skippedCount,
+      averageLatenessMinutes: stats.averageLatenessMinutes,
+    };
+  });
+
+  const completedByUser = mapped
+    .filter((slot) => slot.status === 'completed' && slot.completedByName)
+    .reduce<Record<string, number>>((acc, slot) => {
+      const key = slot.completedByName as string;
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
+
+  const allLateness = mapped
+    .filter((slot) => slot.status === 'completed' && slot.latenessMinutes !== null)
+    .map((slot) => slot.latenessMinutes as number);
+
+  return {
+    timezone,
+    startDate,
+    endDate,
+    perDay,
+    userBreakdown: Object.entries(completedByUser)
+      .map(([name, completedCount]) => ({ name, completedCount }))
+      .sort((a, b) => b.completedCount - a.completedCount),
+    summary: {
+      totalCompleted: mapped.filter((slot) => slot.status === 'completed').length,
+      totalSkipped: mapped.filter((slot) => slot.status === 'skipped').length,
+      averageLatenessMinutes: allLateness.length
+        ? Math.round(allLateness.reduce((sum, value) => sum + value, 0) / allLateness.length)
+        : null,
+      bestLatenessMinutes: allLateness.length ? Math.min(...allLateness) : null,
+      worstLatenessMinutes: allLateness.length ? Math.max(...allLateness) : null,
+    },
+  };
+}
+
+async function applySlotSetting(
+  db: D1Database,
+  input: {
+    slotDate: string;
+    slotKey: string;
+    baseTime: string;
+    time: string | null;
+    skipped: boolean;
+    reason: string | null;
+  },
+) {
+  const now = new Date().toISOString();
+
+  if (input.time && input.time !== input.baseTime) {
+    await db.prepare(
+      `INSERT INTO schedule_overrides (slot_date, slot_key, slot_time, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(slot_date, slot_key) DO UPDATE SET
+         slot_time = excluded.slot_time,
+         updated_at = excluded.updated_at`,
+    )
+      .bind(input.slotDate, input.slotKey, input.time, now)
+      .run();
+  } else {
+    await db.prepare('DELETE FROM schedule_overrides WHERE slot_date = ?1 AND slot_key = ?2')
+      .bind(input.slotDate, input.slotKey)
+      .run();
+  }
+
+  if (input.skipped) {
+    await db.prepare(
+      `INSERT INTO skipped_slots (slot_date, slot_key, reason, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(slot_date, slot_key) DO UPDATE SET
+         reason = excluded.reason,
+         updated_at = excluded.updated_at`,
+    )
+      .bind(input.slotDate, input.slotKey, input.reason, now)
+      .run();
+  } else {
+    await db.prepare('DELETE FROM skipped_slots WHERE slot_date = ?1 AND slot_key = ?2')
+      .bind(input.slotDate, input.slotKey)
+      .run();
+  }
+}
+
 async function readSession(request: Request, env: Env): Promise<SessionPayload | null> {
   const token = parseCookies(request.headers.get('cookie'))[COOKIE_NAME];
   if (!token) return null;
@@ -1064,6 +1282,22 @@ function isIsoDate(value: string): boolean {
 
 function isTimeString(value: string): boolean {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function enumerateDateRange(startDate: string, endDate: string): string[] {
+  const dates: string[] = [];
+  let cursor = startDate;
+  while (cursor <= endDate) {
+    dates.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+  return dates;
+}
+
+function addDays(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + days));
+  return next.toISOString().slice(0, 10);
 }
 
 function encodeBase64Url(value: string): string {

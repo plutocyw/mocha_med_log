@@ -1,5 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 
+type View = 'home' | 'stats' | 'settings';
+
 type User = {
   id: string;
   name: string;
@@ -67,6 +69,30 @@ type SettingsSlotDraft = {
   reason: string;
 };
 
+type StatsData = {
+  timezone: string;
+  startDate: string;
+  endDate: string;
+  perDay: Array<{
+    date: string;
+    completedCount: number;
+    pendingCount: number;
+    skippedCount: number;
+    averageLatenessMinutes: number | null;
+  }>;
+  userBreakdown: Array<{
+    name: string;
+    completedCount: number;
+  }>;
+  summary: {
+    totalCompleted: number;
+    totalSkipped: number;
+    averageLatenessMinutes: number | null;
+    bestLatenessMinutes: number | null;
+    worstLatenessMinutes: number | null;
+  };
+};
+
 type BootstrapData = {
   me: User;
   timezone: string;
@@ -95,7 +121,7 @@ type DayResponse = {
 
 type SettingsResponse = {
   settings: SettingsData;
-  day: DayData;
+  day?: DayData;
 };
 
 type PushState = {
@@ -113,17 +139,20 @@ const initialPushState: PushState = {
 };
 
 export default function App() {
+  const [view, setView] = useState<View>('home');
   const [loading, setLoading] = useState(true);
   const [loginBusy, setLoginBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [day, setDay] = useState<DayData | null>(null);
-  const [settings, setSettings] = useState<SettingsData | null>(null);
-  const [settingsDrafts, setSettingsDrafts] = useState<SettingsSlotDraft[]>([]);
   const [selectedDate, setSelectedDate] = useState('');
-  const [settingsDate, setSettingsDate] = useState('');
   const [authState, setAuthState] = useState<AuthState>({ stage: 'password' });
   const [pushState, setPushState] = useState<PushState>(initialPushState);
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settingsDrafts, setSettingsDrafts] = useState<SettingsSlotDraft[]>([]);
+  const [settingsRange, setSettingsRange] = useState({ startDate: '', endDate: '' });
+  const [stats, setStats] = useState<StatsData | null>(null);
+  const [statsRange, setStatsRange] = useState({ startDate: '', endDate: '' });
   const [loginError, setLoginError] = useState('');
   const [appError, setAppError] = useState('');
   const [password, setPassword] = useState('');
@@ -135,38 +164,25 @@ export default function App() {
 
   useEffect(() => {
     if (!bootstrap) return;
-
-    const interval = window.setInterval(() => {
-      void loadAppData(selectedDate || bootstrap.todayDate, settingsDate || bootstrap.todayDate, { silent: true });
-    }, 60_000);
-
-    return () => window.clearInterval(interval);
-  }, [bootstrap, selectedDate, settingsDate]);
-
-  useEffect(() => {
-    if (!bootstrap) return;
     void refreshPushState(bootstrap.vapidPublicKey);
   }, [bootstrap]);
 
   const nextPending = useMemo(() => {
-    if (!day || !bootstrap) return null;
+    if (!bootstrap || !day) return null;
     return [...bootstrap.overdue, ...day.slots].find((slot) => slot.status === 'pending') ?? null;
   }, [bootstrap, day]);
 
   async function initialize() {
     setLoading(true);
     setAppError('');
-
     try {
       const state = await fetchAuthState();
       setAuthState(state);
-
       if (state.stage === 'identity') {
         setSelectedUserId(state.users[0]?.id ?? '');
       }
-
       if (state.stage === 'ready') {
-        await loadAppData(undefined, undefined, { silent: true });
+        await loadBootstrapAndViews();
       }
     } catch (error) {
       console.error(error);
@@ -177,10 +193,7 @@ export default function App() {
   }
 
   async function fetchAuthState(): Promise<AuthState> {
-    const response = await fetch('/api/auth/state', {
-      headers: { accept: 'application/json' },
-    });
-
+    const response = await fetch('/api/auth/state', { headers: { accept: 'application/json' } });
     if (!response.ok) throw new Error('Failed to load auth state.');
     return (await response.json()) as AuthState;
   }
@@ -189,8 +202,7 @@ export default function App() {
     const response = await fetch(`/api/day?date=${encodeURIComponent(date)}`, {
       headers: { accept: 'application/json' },
     });
-
-    if (!response.ok) throw new Error('Failed to load selected day.');
+    if (!response.ok) throw new Error('Failed to load day.');
     return (await response.json()) as DayResponse;
   }
 
@@ -198,74 +210,62 @@ export default function App() {
     const response = await fetch(`/api/settings?date=${encodeURIComponent(date)}`, {
       headers: { accept: 'application/json' },
     });
-
     if (!response.ok) throw new Error('Failed to load settings.');
     return (await response.json()) as SettingsData;
   }
 
-  async function loadAppData(viewDate?: string, nextSettingsDate?: string, options?: { silent?: boolean }) {
-    if (!options?.silent) setLoading(true);
+  async function fetchStats(startDate: string, endDate: string): Promise<StatsData> {
+    const response = await fetch(
+      `/api/stats?start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}`,
+      { headers: { accept: 'application/json' } },
+    );
+    if (!response.ok) throw new Error('Failed to load stats.');
+    return (await response.json()) as StatsData;
+  }
 
-    try {
-      const response = await fetch('/api/bootstrap', {
-        headers: { accept: 'application/json' },
-      });
+  async function loadBootstrapAndViews() {
+    const response = await fetch('/api/bootstrap', { headers: { accept: 'application/json' } });
+    if (response.status === 401) {
+      const state = await fetchAuthState();
+      resetAuthedState(state);
+      return;
+    }
+    if (!response.ok) throw new Error('Failed to load dashboard.');
 
-      if (response.status === 401) {
-        const state = await fetchAuthState();
-        setAuthState(state);
-        setBootstrap(null);
-        setDay(null);
-        setSettings(null);
-        setSettingsDrafts([]);
-        setPushState(initialPushState);
-        setSelectedDate('');
-        setSettingsDate('');
-        if (state.stage === 'identity') {
-          setSelectedUserId((current) => current || state.users[0]?.id || '');
-        }
-        return;
-      }
+    const data = (await response.json()) as BootstrapData;
+    setBootstrap(data);
+    setAuthState({ stage: 'ready', me: data.me });
+    setDay(data.day);
+    setSelectedDate(data.todayDate);
+    setSettings(data.settings);
+    setSettingsDrafts(makeSettingsDrafts(data.settings));
+    setSettingsRange({
+      startDate: data.settings.date,
+      endDate: data.settings.date,
+    });
+    setStatsRange({
+      startDate: data.startDate,
+      endDate: data.todayDate,
+    });
+    const statsData = await fetchStats(data.startDate, data.todayDate);
+    setStats(statsData);
+    setAppError('');
+  }
 
-      if (!response.ok) throw new Error('Failed to load dashboard.');
-
-      const data = (await response.json()) as BootstrapData;
-      setBootstrap(data);
-      setAuthState({ stage: 'ready', me: data.me });
-
-      const targetDate = viewDate && viewDate >= data.startDate && viewDate <= data.todayDate
-        ? viewDate
-        : data.todayDate;
-      const targetSettingsDate = nextSettingsDate && nextSettingsDate >= data.settings.minDate
-        ? nextSettingsDate
-        : data.settings.date;
-
-      if (targetDate === data.todayDate) {
-        setDay(data.day);
-        setSelectedDate(data.todayDate);
-      } else {
-        const dayResponse = await fetchDay(targetDate);
-        setDay(dayResponse.day);
-        setSelectedDate(dayResponse.selectedDate);
-      }
-
-      if (targetSettingsDate === data.settings.date) {
-        setSettings(data.settings);
-        setSettingsDate(data.settings.date);
-        setSettingsDrafts(makeSettingsDrafts(data.settings));
-      } else {
-        const settingsResponse = await fetchSettings(targetSettingsDate);
-        setSettings(settingsResponse);
-        setSettingsDate(settingsResponse.date);
-        setSettingsDrafts(makeSettingsDrafts(settingsResponse));
-      }
-
-      setAppError('');
-    } catch (error) {
-      console.error(error);
-      setAppError('Unable to load the medication log right now.');
-    } finally {
-      setLoading(false);
+  function resetAuthedState(state: AuthState) {
+    setAuthState(state);
+    setBootstrap(null);
+    setDay(null);
+    setSettings(null);
+    setSettingsDrafts([]);
+    setSettingsRange({ startDate: '', endDate: '' });
+    setStats(null);
+    setStatsRange({ startDate: '', endDate: '' });
+    setPushState(initialPushState);
+    setSelectedDate('');
+    setView('home');
+    if (state.stage === 'identity') {
+      setSelectedUserId(state.users[0]?.id ?? '');
     }
   }
 
@@ -273,25 +273,20 @@ export default function App() {
     event.preventDefault();
     setLoginBusy(true);
     setLoginError('');
-
     try {
       const response = await fetch('/api/unlock', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ password }),
       });
-
       const data = (await response.json()) as { error?: string };
       if (!response.ok) {
         setLoginError(data.error ?? 'Unable to unlock the app.');
         return;
       }
-
       const state = await fetchAuthState();
       setAuthState(state);
-      if (state.stage === 'identity') {
-        setSelectedUserId(state.users[0]?.id ?? '');
-      }
+      if (state.stage === 'identity') setSelectedUserId(state.users[0]?.id ?? '');
     } catch (error) {
       console.error(error);
       setLoginError('Unable to unlock the app.');
@@ -304,22 +299,19 @@ export default function App() {
     event.preventDefault();
     setLoginBusy(true);
     setLoginError('');
-
     try {
       const response = await fetch('/api/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ userId: selectedUserId }),
       });
-
       const data = (await response.json()) as { error?: string };
       if (!response.ok) {
         setLoginError(data.error ?? 'Unable to continue.');
         return;
       }
-
       setPassword('');
-      await loadAppData();
+      await loadBootstrapAndViews();
     } catch (error) {
       console.error(error);
       setLoginError('Unable to continue.');
@@ -332,15 +324,8 @@ export default function App() {
     setActionBusy('logout');
     try {
       await fetch('/api/logout', { method: 'POST' });
-      setBootstrap(null);
-      setDay(null);
-      setSettings(null);
-      setSettingsDrafts([]);
-      setAuthState({ stage: 'password' });
-      setPushState(initialPushState);
+      resetAuthedState({ stage: 'password' });
       setPassword('');
-      setSelectedDate('');
-      setSettingsDate('');
     } finally {
       setActionBusy(null);
     }
@@ -348,15 +333,15 @@ export default function App() {
 
   async function handleComplete(slotId: string) {
     if (!bootstrap) return;
-
     setActionBusy(slotId);
     try {
-      const response = await fetch(`/api/slots/${encodeURIComponent(slotId)}/complete`, {
-        method: 'POST',
-      });
-
+      const response = await fetch(`/api/slots/${encodeURIComponent(slotId)}/complete`, { method: 'POST' });
       if (!response.ok) throw new Error('Failed to complete slot.');
-      await loadAppData(selectedDate || bootstrap.todayDate, settingsDate || bootstrap.todayDate, { silent: true });
+      const dayResponse = await fetchDay(selectedDate || bootstrap.todayDate);
+      setDay(dayResponse.day);
+      const statsData = await fetchStats(statsRange.startDate, statsRange.endDate);
+      setStats(statsData);
+      setAppError('');
     } catch (error) {
       console.error(error);
       setAppError('Unable to mark that dose complete.');
@@ -365,11 +350,31 @@ export default function App() {
     }
   }
 
-  async function handleDateChange(nextDate: string) {
-    if (!bootstrap || !nextDate) return;
-    setActionBusy('date');
+  async function handleDayChange(nextDate: string) {
+    if (!nextDate) return;
+    setActionBusy('home-date');
     try {
-      await loadAppData(nextDate, settingsDate || bootstrap.todayDate, { silent: true });
+      const dayResponse = await fetchDay(nextDate);
+      setDay(dayResponse.day);
+      setSelectedDate(dayResponse.selectedDate);
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to load that day.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleStatsRefresh() {
+    if (!statsRange.startDate || !statsRange.endDate) return;
+    setActionBusy('stats');
+    try {
+      const data = await fetchStats(statsRange.startDate, statsRange.endDate);
+      setStats(data);
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to load stats for that range.');
     } finally {
       setActionBusy(null);
     }
@@ -381,8 +386,9 @@ export default function App() {
     try {
       const nextSettings = await fetchSettings(nextDate);
       setSettings(nextSettings);
-      setSettingsDate(nextSettings.date);
       setSettingsDrafts(makeSettingsDrafts(nextSettings));
+      setSettingsRange({ startDate: nextSettings.date, endDate: nextSettings.date });
+      setAppError('');
     } catch (error) {
       console.error(error);
       setAppError('Unable to load settings for that date.');
@@ -391,46 +397,38 @@ export default function App() {
     }
   }
 
-  async function saveSettingsSlotDraft(slotKey: string) {
-    const draft = settingsDrafts.find((slot) => slot.key === slotKey);
-    if (!draft || !settingsDate) return;
-
-    setActionBusy(`settings-${slotKey}`);
+  async function handleBatchSave() {
+    if (!settingsRange.startDate || !settingsRange.endDate) return;
+    setActionBusy('settings-batch');
     try {
-      const response = await fetch('/api/settings/slot', {
+      const response = await fetch('/api/settings/batch', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          date: settingsDate,
-          slotKey: draft.key,
-          time: draft.time,
-          skipped: draft.skipped,
-          reason: draft.reason || null,
+          startDate: settingsRange.startDate,
+          endDate: settingsRange.endDate,
+          slots: settingsDrafts.map((slot) => ({
+            slotKey: slot.key,
+            time: slot.time,
+            skipped: slot.skipped,
+            reason: slot.reason || null,
+          })),
         }),
       });
-
-      if (!response.ok) throw new Error('Failed to save settings slot.');
-
+      if (!response.ok) throw new Error('Failed to save batch settings.');
       const data = (await response.json()) as SettingsResponse;
-      setSettings(data.settings);
-      setSettingsDrafts(makeSettingsDrafts(data.settings));
-
-      if (selectedDate === settingsDate) {
-        setDay(data.day);
+      if (data.settings) {
+        setSettings(data.settings);
+        setSettingsDrafts(makeSettingsDrafts(data.settings));
+      } else {
+        const refreshed = await fetchSettings(settingsRange.startDate);
+        setSettings(refreshed);
+        setSettingsDrafts(makeSettingsDrafts(refreshed));
       }
-
-      if (bootstrap) {
-        setBootstrap({
-          ...bootstrap,
-          settings: data.settings,
-          day: selectedDate === settingsDate ? data.day : bootstrap.day,
-        });
-      }
-
       setAppError('');
     } catch (error) {
       console.error(error);
-      setAppError('Unable to save that schedule setting.');
+      setAppError('Unable to save batch settings.');
     } finally {
       setActionBusy(null);
     }
@@ -440,7 +438,6 @@ export default function App() {
     if (!bootstrap) return;
     setActionBusy('notifications');
     setAppError('');
-
     try {
       if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
         setPushState({
@@ -451,7 +448,6 @@ export default function App() {
         });
         return;
       }
-
       const permission = await Notification.requestPermission();
       if (permission !== 'granted') {
         setPushState({
@@ -462,7 +458,6 @@ export default function App() {
         });
         return;
       }
-
       const registration = await navigator.serviceWorker.ready;
       let subscription = await registration.pushManager.getSubscription();
       if (!subscription) {
@@ -471,13 +466,11 @@ export default function App() {
           applicationServerKey: base64UrlToArrayBuffer(bootstrap.vapidPublicKey),
         });
       }
-
       await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(subscription.toJSON()),
       });
-
       await refreshPushState(bootstrap.vapidPublicKey);
     } catch (error) {
       console.error(error);
@@ -492,11 +485,9 @@ export default function App() {
       setPushState(initialPushState);
       return;
     }
-
     const permission = Notification.permission;
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
-
     if (permission === 'granted' && subscription) {
       await fetch('/api/push/subscribe', {
         method: 'POST',
@@ -504,13 +495,11 @@ export default function App() {
         body: JSON.stringify(subscription.toJSON()),
       }).catch(() => undefined);
     }
-
     const standalone = isStandaloneMode();
     const guidance =
       /iPhone|iPad|iPod/i.test(navigator.userAgent) && !standalone
         ? 'On iPhone and iPad, notifications only work after Add to Home Screen.'
         : `Time-critical reminders repeat every ${bootstrap?.reminderIntervalMinutes ?? 5} minutes until someone logs the dose.`;
-
     setPushState({
       supported: true,
       permission,
@@ -522,16 +511,11 @@ export default function App() {
             ? 'Notification permission is blocked for this browser.'
             : guidance,
     });
-
     void vapidPublicKey;
   }
 
   if (loading && !bootstrap && authState.stage === 'password') {
-    return (
-      <Shell>
-        <div className="panel muted">Loading…</div>
-      </Shell>
-    );
+    return <Shell><div className="panel muted">Loading…</div></Shell>;
   }
 
   if (!bootstrap) {
@@ -542,7 +526,6 @@ export default function App() {
           <h1>Medication tracking for Mocha with push reminders that do not stop until someone logs the dose.</h1>
           <p>First unlock the site with the shared password. After that, pick whether this is Johnny or Pai.</p>
         </section>
-
         {authState.stage === 'password' ? (
           <form className="panel login-form" onSubmit={handleUnlock}>
             <label>
@@ -565,32 +548,19 @@ export default function App() {
           <form className="panel login-form" onSubmit={handleIdentityLogin}>
             <label>
               Who is using the app?
-              <select
-                value={selectedUserId}
-                onChange={(event) => setSelectedUserId(event.target.value)}
-                required
-              >
-                {authState.stage === 'identity'
-                  ? authState.users.map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {user.name}
-                      </option>
-                    ))
-                  : null}
+              <select value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)} required>
+                {authState.stage === 'identity' ? authState.users.map((user) => (
+                  <option key={user.id} value={user.id}>{user.name}</option>
+                )) : null}
               </select>
             </label>
             <div className="inline-actions">
-              <button className="ghost" type="button" onClick={() => setAuthState({ stage: 'password' })}>
-                Back
-              </button>
-              <button className="primary" type="submit" disabled={loginBusy}>
-                {loginBusy ? 'Opening…' : 'Continue'}
-              </button>
+              <button className="ghost" type="button" onClick={() => setAuthState({ stage: 'password' })}>Back</button>
+              <button className="primary" type="submit" disabled={loginBusy}>{loginBusy ? 'Opening…' : 'Continue'}</button>
             </div>
             {loginError ? <p className="error">{loginError}</p> : null}
           </form>
         )}
-
         {appError ? <div className="toast">{appError}</div> : null}
       </Shell>
     );
@@ -602,192 +572,242 @@ export default function App() {
         <div className="eyebrow">Mocha Med Log</div>
         <div className="hero-row">
           <div>
-            <h1>{nextPending ? `${nextPending.label} still needs to be logged.` : 'Today is fully logged.'}</h1>
-            <p>
-              Signed in as <strong>{bootstrap.me.name}</strong>. The app always opens on today&apos;s date, and you can review history back to {bootstrap.startDate}.
-            </p>
+            <h1>{view === 'home' && nextPending ? `${nextPending.label} still needs to be logged.` : 'Mocha medication tracker'}</h1>
+            <p>Signed in as <strong>{bootstrap.me.name}</strong>. Navigate between daily logging, stats, and future schedule changes.</p>
           </div>
-          <button className="ghost" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>
-            Sign out
-          </button>
+          <button className="ghost" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>Sign out</button>
         </div>
       </section>
 
-      <section className="grid">
-        <article className="panel">
-          <div className="panel-head">
-            <h2>Date</h2>
-            <button
-              className="ghost small-button"
-              type="button"
-              onClick={() => void handleDateChange(bootstrap.todayDate)}
-              disabled={selectedDate === bootstrap.todayDate || actionBusy === 'date'}
-            >
-              Today
-            </button>
-          </div>
-          <div className="date-controls">
-            <input
-              type="date"
-              value={selectedDate}
-              min={bootstrap.startDate}
-              max={bootstrap.todayDate}
-              onChange={(event) => void handleDateChange(event.target.value)}
-            />
-            <p className="small">Open the current day by default, then use the date picker to review older records.</p>
-          </div>
-        </article>
+      <nav className="panel nav-panel">
+        <div className="nav-buttons">
+          <button className={view === 'home' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('home')}>Home</button>
+          <button className={view === 'stats' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('stats')}>Stats</button>
+          <button className={view === 'settings' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('settings')}>Settings</button>
+        </div>
+      </nav>
 
-        <article className="panel">
-          <div className="panel-head">
-            <h2>Notifications</h2>
-            <span>{pushState.subscribed ? 'Active on this device' : 'Needs setup'}</span>
-          </div>
-          <p className="small">{pushState.message}</p>
-          <button
-            className="primary"
-            type="button"
-            onClick={() => void enableNotifications()}
-            disabled={actionBusy === 'notifications' || !pushState.supported}
-          >
-            {pushState.subscribed ? 'Refresh device subscription' : 'Enable notifications'}
-          </button>
-        </article>
-      </section>
+      {view === 'home' ? (
+        <>
+          <section className="grid">
+            <article className="panel">
+              <div className="panel-head">
+                <h2>Today</h2>
+                <button className="ghost small-button" type="button" onClick={() => void handleDayChange(bootstrap.todayDate)} disabled={selectedDate === bootstrap.todayDate || actionBusy === 'home-date'}>Today</button>
+              </div>
+              <div className="date-controls">
+                <input type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
+                <p className="small">Home always opens on today. Use the picker to inspect older records.</p>
+              </div>
+            </article>
+            <article className="panel">
+              <div className="panel-head">
+                <h2>Notifications</h2>
+                <span>{pushState.subscribed ? 'Active on this device' : 'Needs setup'}</span>
+              </div>
+              <p className="small">{pushState.message}</p>
+              <button className="primary" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
+                {pushState.subscribed ? 'Refresh device subscription' : 'Enable notifications'}
+              </button>
+            </article>
+          </section>
 
-      {day ? (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
-            <span>{day.stats.completedCount} of {day.slots.length} logged</span>
-          </div>
-          <div className="stat-grid">
-            <StatCard label="Completed" value={String(day.stats.completedCount)} />
-            <StatCard label="Pending" value={String(day.stats.pendingCount)} />
-            <StatCard label="Skipped" value={String(day.stats.skippedCount)} />
-            <StatCard label="Average delta" value={formatDelta(day.stats.averageLatenessMinutes)} />
-            <StatCard label="Worst delta" value={formatDelta(day.stats.maxLatenessMinutes)} />
-          </div>
-          <div className="slots">
-            {day.slots.map((slot) => (
-              <SlotCard
-                key={slot.id}
-                slot={slot}
-                busy={actionBusy === slot.id}
-                onComplete={() => void handleComplete(slot.id)}
-              />
-            ))}
-          </div>
-        </section>
+          {day ? (
+            <section className="panel">
+              <div className="panel-head">
+                <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
+                <span>{day.stats.completedCount} of {day.slots.length} logged</span>
+              </div>
+              <div className="stat-grid">
+                <StatCard label="Completed" value={String(day.stats.completedCount)} />
+                <StatCard label="Pending" value={String(day.stats.pendingCount)} />
+                <StatCard label="Skipped" value={String(day.stats.skippedCount)} />
+                <StatCard label="Average delta" value={formatDelta(day.stats.averageLatenessMinutes)} />
+                <StatCard label="Worst delta" value={formatDelta(day.stats.maxLatenessMinutes)} />
+              </div>
+              <div className="slots">
+                {day.slots.map((slot) => (
+                  <SlotCard key={slot.id} slot={slot} busy={actionBusy === slot.id} onComplete={() => void handleComplete(slot.id)} />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {bootstrap.overdue.length > 0 ? (
+            <section className="panel">
+              <div className="panel-head">
+                <h2>Overdue</h2>
+                <span>{bootstrap.overdue.length} open slots</span>
+              </div>
+              <div className="slots">
+                {bootstrap.overdue.map((slot) => (
+                  <SlotCard key={slot.id} slot={slot} busy={actionBusy === slot.id} onComplete={() => void handleComplete(slot.id)} />
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </>
       ) : null}
 
-      {settings ? (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Settings</h2>
-            <span>Future time overrides and boarding skips</span>
-          </div>
-          <div className="settings-grid">
-            <div className="settings-column">
-              <div className="date-controls">
-                <label className="login-form label-inline">
-                  Settings date
-                  <input
-                    type="date"
-                    value={settingsDate}
-                    min={settings.minDate}
-                    onChange={(event) => void handleSettingsDateChange(event.target.value)}
-                  />
-                </label>
-                <p className="small">Pick a future date, then adjust slot times or skip specific doses for boarding days.</p>
+      {view === 'stats' && stats ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Stats Range</h2>
+              <button className="primary small-button" type="button" onClick={() => void handleStatsRefresh()} disabled={actionBusy === 'stats'}>{actionBusy === 'stats' ? 'Loading…' : 'Refresh'}</button>
+            </div>
+            <div className="range-grid">
+              <label className="settings-field">
+                Start
+                <input type="date" value={statsRange.startDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => setStatsRange((current) => ({ ...current, startDate: event.target.value }))} />
+              </label>
+              <label className="settings-field">
+                End
+                <input type="date" value={statsRange.endDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => setStatsRange((current) => ({ ...current, endDate: event.target.value }))} />
+              </label>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Summary</h2>
+              <span>{stats.startDate} to {stats.endDate}</span>
+            </div>
+            <div className="stat-grid">
+              <StatCard label="Completed" value={String(stats.summary.totalCompleted)} />
+              <StatCard label="Skipped" value={String(stats.summary.totalSkipped)} />
+              <StatCard label="Average delta" value={formatDelta(stats.summary.averageLatenessMinutes)} />
+              <StatCard label="Best delta" value={formatDelta(stats.summary.bestLatenessMinutes)} />
+              <StatCard label="Worst delta" value={formatDelta(stats.summary.worstLatenessMinutes)} />
+            </div>
+          </section>
+
+          <section className="settings-grid">
+            <article className="panel">
+              <div className="panel-head">
+                <h2>Daily Accuracy</h2>
+                <span>Average lateness by day</span>
+              </div>
+              <BarChart
+                items={stats.perDay.map((point) => ({
+                  label: point.date.slice(5),
+                  value: point.averageLatenessMinutes ?? 0,
+                }))}
+                emptyLabel="No completed doses in this range."
+                valueFormatter={(value) => `${value}m`}
+              />
+            </article>
+
+            <article className="panel">
+              <div className="panel-head">
+                <h2>User Breakdown</h2>
+                <span>Who logged medication</span>
+              </div>
+              <BarChart
+                items={stats.userBreakdown.map((item) => ({
+                  label: item.name,
+                  value: item.completedCount,
+                }))}
+                emptyLabel="No completed doses in this range."
+                valueFormatter={(value) => `${value}`}
+              />
+            </article>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Per-Day Detail</h2>
+              <span>{stats.perDay.length} days</span>
+            </div>
+            <div className="activity">
+              {stats.perDay.map((point) => (
+                <div className="activity-row" key={point.date}>
+                  <div><strong>{point.date}</strong></div>
+                  <div className="status">
+                    {point.completedCount} done, {point.skippedCount} skipped, average {formatDelta(point.averageLatenessMinutes)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {view === 'settings' && settings ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Batch Settings</h2>
+              <button className="primary small-button" type="button" onClick={() => void handleBatchSave()} disabled={actionBusy === 'settings-batch'}>
+                {actionBusy === 'settings-batch' ? 'Saving…' : 'Apply to Range'}
+              </button>
+            </div>
+            <div className="range-grid">
+              <label className="settings-field">
+                Start
+                <input type="date" value={settingsRange.startDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, startDate: event.target.value }))} />
+              </label>
+              <label className="settings-field">
+                End
+                <input type="date" value={settingsRange.endDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, endDate: event.target.value }))} />
+              </label>
+            </div>
+            <div className="date-controls">
+              <label className="settings-field">
+                Preview date
+                <input type="date" value={settings.date} min={settings.minDate} onChange={(event) => void handleSettingsDateChange(event.target.value)} />
+              </label>
+              <p className="small">Edit the slot values below, then apply them across the selected date range.</p>
+            </div>
+          </section>
+
+          <section className="settings-grid">
+            <article className="panel settings-column">
+              <div className="panel-head compact-head">
+                <h2>Range Template</h2>
+                <span>{settingsRange.startDate} to {settingsRange.endDate}</span>
               </div>
               <div className="settings-slots">
-                {settingsDrafts.map((slot) => {
-                  const busy = actionBusy === `settings-${slot.key}`;
-                  return (
-                    <div className="settings-slot-card" key={slot.key}>
-                      <div className="slot-title">
-                        <strong>{slot.label}</strong>
-                        <span>Default {slot.defaultTime}</span>
-                      </div>
-                      <label className="settings-field">
-                        Time
-                        <input
-                          type="time"
-                          value={slot.time}
-                          onChange={(event) =>
-                            setSettingsDrafts((current) =>
-                              current.map((item) =>
-                                item.key === slot.key ? { ...item, time: event.target.value } : item,
-                              ),
-                            )
-                          }
-                          disabled={slot.skipped}
-                        />
-                      </label>
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={slot.skipped}
-                          onChange={(event) =>
-                            setSettingsDrafts((current) =>
-                              current.map((item) =>
-                                item.key === slot.key ? { ...item, skipped: event.target.checked } : item,
-                              ),
-                            )
-                          }
-                        />
-                        Skip this slot
-                      </label>
-                      <label className="settings-field">
-                        Reason
-                        <input
-                          type="text"
-                          value={slot.reason}
-                          onChange={(event) =>
-                            setSettingsDrafts((current) =>
-                              current.map((item) =>
-                                item.key === slot.key ? { ...item, reason: event.target.value } : item,
-                              ),
-                            )
-                          }
-                          placeholder="Boarding, vet stay, etc."
-                        />
-                      </label>
-                      <div className="inline-actions">
-                        <button
-                          className="ghost"
-                          type="button"
-                          onClick={() =>
-                            setSettingsDrafts((current) =>
-                              current.map((item) =>
-                                item.key === slot.key
-                                  ? { ...item, time: item.defaultTime, skipped: false, reason: '' }
-                                  : item,
-                              ),
-                            )
-                          }
-                        >
-                          Reset
-                        </button>
-                        <button
-                          className="primary"
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void saveSettingsSlotDraft(slot.key)}
-                        >
-                          {busy ? 'Saving…' : 'Save'}
-                        </button>
-                      </div>
+                {settingsDrafts.map((slot) => (
+                  <div className="settings-slot-card" key={slot.key}>
+                    <div className="slot-title">
+                      <strong>{slot.label}</strong>
+                      <span>Default {slot.defaultTime}</span>
                     </div>
-                  );
-                })}
+                    <label className="settings-field">
+                      Time
+                      <input
+                        type="time"
+                        value={slot.time}
+                        disabled={slot.skipped}
+                        onChange={(event) => setSettingsDrafts((current) => current.map((item) => item.key === slot.key ? { ...item, time: event.target.value } : item))}
+                      />
+                    </label>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={slot.skipped}
+                        onChange={(event) => setSettingsDrafts((current) => current.map((item) => item.key === slot.key ? { ...item, skipped: event.target.checked } : item))}
+                      />
+                      Skip this slot for the range
+                    </label>
+                    <label className="settings-field">
+                      Reason
+                      <input
+                        type="text"
+                        value={slot.reason}
+                        onChange={(event) => setSettingsDrafts((current) => current.map((item) => item.key === slot.key ? { ...item, reason: event.target.value } : item))}
+                        placeholder="Boarding, vet stay, etc."
+                      />
+                    </label>
+                  </div>
+                ))}
               </div>
-            </div>
+            </article>
 
-            <div className="settings-column">
+            <article className="panel settings-column">
               <div className="panel-head compact-head">
-                <h2>Upcoming custom dates</h2>
+                <h2>Upcoming Overrides</h2>
                 <span>{settings.upcomingCustomizations.length} entries</span>
               </div>
               <div className="activity">
@@ -796,40 +816,17 @@ export default function App() {
                 ) : (
                   settings.upcomingCustomizations.map((item) => (
                     <div className="activity-row" key={`${item.date}:${item.slotKey}`}>
-                      <div>
-                        <strong>{item.date}</strong> · {item.label}
-                      </div>
+                      <div><strong>{item.date}</strong> · {item.label}</div>
                       <div className="status">
-                        {item.skipped
-                          ? `Skipped${item.reason ? `: ${item.reason}` : ''}`
-                          : `Time override: ${item.overrideTime}`}
+                        {item.skipped ? `Skipped${item.reason ? `: ${item.reason}` : ''}` : `Time override: ${item.overrideTime}`}
                       </div>
                     </div>
                   ))
                 )}
               </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      {bootstrap.overdue.length > 0 ? (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Overdue</h2>
-            <span>{bootstrap.overdue.length} open slots</span>
-          </div>
-          <div className="slots">
-            {bootstrap.overdue.map((slot) => (
-              <SlotCard
-                key={slot.id}
-                slot={slot}
-                busy={actionBusy === slot.id}
-                onComplete={() => void handleComplete(slot.id)}
-              />
-            ))}
-          </div>
-        </section>
+            </article>
+          </section>
+        </>
       ) : null}
 
       {appError ? <div className="toast">{appError}</div> : null}
@@ -869,14 +866,10 @@ function SlotCard({
               ? 'Skipped for this date. No reminder will fire for this slot.'
               : 'Waiting for either person to log this dose.'}
         </p>
-        {slot.status === 'completed' ? (
-          <p className="delta-line">Difference from schedule: {formatDelta(slot.latenessMinutes)}</p>
-        ) : null}
+        {slot.status === 'completed' ? <p className="delta-line">Difference from schedule: {formatDelta(slot.latenessMinutes)}</p> : null}
       </div>
       {slot.status === 'pending' ? (
-        <button className="primary" type="button" disabled={busy} onClick={onComplete}>
-          {busy ? 'Saving…' : 'Mark complete'}
-        </button>
+        <button className="primary" type="button" disabled={busy} onClick={onComplete}>{busy ? 'Saving…' : 'Mark complete'}</button>
       ) : slot.status === 'skipped' ? (
         <div className="pill skipped">Skipped</div>
       ) : (
@@ -891,6 +884,37 @@ function StatCard({ label, value }: { label: string; value: string }) {
     <div className="stat-card">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function BarChart({
+  items,
+  emptyLabel,
+  valueFormatter,
+}: {
+  items: Array<{ label: string; value: number }>;
+  emptyLabel: string;
+  valueFormatter: (value: number) => string;
+}) {
+  const max = Math.max(...items.map((item) => item.value), 0);
+  if (!items.length || max === 0) {
+    return <div className="muted">{emptyLabel}</div>;
+  }
+
+  return (
+    <div className="bar-chart">
+      {items.map((item) => (
+        <div className="bar-row" key={item.label}>
+          <div className="bar-meta">
+            <span>{item.label}</span>
+            <strong>{valueFormatter(item.value)}</strong>
+          </div>
+          <div className="bar-track">
+            <div className="bar-fill" style={{ width: `${(item.value / max) * 100}%` }} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -933,8 +957,5 @@ function formatDelta(value: number | null): string {
 }
 
 function isStandaloneMode(): boolean {
-  return (
-    window.matchMedia('(display-mode: standalone)').matches ||
-    (navigator as Navigator & { standalone?: boolean }).standalone === true
-  );
+  return window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
