@@ -11,7 +11,7 @@ type Slot = {
   key: string;
   label: string;
   time: string;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'skipped';
   completedAt: string | null;
   completedByName: string | null;
   lastNotifiedAt: string | null;
@@ -21,6 +21,7 @@ type Slot = {
 type DayStats = {
   completedCount: number;
   pendingCount: number;
+  skippedCount: number;
   averageLatenessMinutes: number | null;
   maxLatenessMinutes: number | null;
   minLatenessMinutes: number | null;
@@ -30,6 +31,40 @@ type DayData = {
   date: string;
   slots: Slot[];
   stats: DayStats;
+};
+
+type SettingsSlot = {
+  key: string;
+  label: string;
+  defaultTime: string;
+  effectiveTime: string;
+  overrideTime: string | null;
+  skipped: boolean;
+  reason: string | null;
+};
+
+type SettingsData = {
+  date: string;
+  minDate: string;
+  timezone: string;
+  slots: SettingsSlot[];
+  upcomingCustomizations: Array<{
+    date: string;
+    slotKey: string;
+    label: string;
+    overrideTime: string | null;
+    skipped: boolean;
+    reason: string | null;
+  }>;
+};
+
+type SettingsSlotDraft = {
+  key: string;
+  label: string;
+  defaultTime: string;
+  time: string;
+  skipped: boolean;
+  reason: string;
 };
 
 type BootstrapData = {
@@ -44,6 +79,7 @@ type BootstrapData = {
   schedule: { key: string; label: string; time: string }[];
   day: DayData;
   overdue: Slot[];
+  settings: SettingsData;
 };
 
 type AuthState =
@@ -54,6 +90,11 @@ type AuthState =
 type DayResponse = {
   me: User;
   selectedDate: string;
+  day: DayData;
+};
+
+type SettingsResponse = {
+  settings: SettingsData;
   day: DayData;
 };
 
@@ -77,7 +118,10 @@ export default function App() {
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [day, setDay] = useState<DayData | null>(null);
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settingsDrafts, setSettingsDrafts] = useState<SettingsSlotDraft[]>([]);
   const [selectedDate, setSelectedDate] = useState('');
+  const [settingsDate, setSettingsDate] = useState('');
   const [authState, setAuthState] = useState<AuthState>({ stage: 'password' });
   const [pushState, setPushState] = useState<PushState>(initialPushState);
   const [loginError, setLoginError] = useState('');
@@ -93,11 +137,11 @@ export default function App() {
     if (!bootstrap) return;
 
     const interval = window.setInterval(() => {
-      void loadAppData(selectedDate || bootstrap.todayDate, { silent: true });
+      void loadAppData(selectedDate || bootstrap.todayDate, settingsDate || bootstrap.todayDate, { silent: true });
     }, 60_000);
 
     return () => window.clearInterval(interval);
-  }, [bootstrap, selectedDate]);
+  }, [bootstrap, selectedDate, settingsDate]);
 
   useEffect(() => {
     if (!bootstrap) return;
@@ -105,9 +149,9 @@ export default function App() {
   }, [bootstrap]);
 
   const nextPending = useMemo(() => {
-    if (!bootstrap?.day) return null;
-    return [...bootstrap.overdue, ...bootstrap.day.slots].find((slot) => slot.status === 'pending') ?? null;
-  }, [bootstrap]);
+    if (!day || !bootstrap) return null;
+    return [...bootstrap.overdue, ...day.slots].find((slot) => slot.status === 'pending') ?? null;
+  }, [bootstrap, day]);
 
   async function initialize() {
     setLoading(true);
@@ -122,7 +166,7 @@ export default function App() {
       }
 
       if (state.stage === 'ready') {
-        await loadAppData(undefined, { silent: true });
+        await loadAppData(undefined, undefined, { silent: true });
       }
     } catch (error) {
       console.error(error);
@@ -137,17 +181,30 @@ export default function App() {
       headers: { accept: 'application/json' },
     });
 
-    if (!response.ok) {
-      throw new Error('Failed to load auth state.');
-    }
-
+    if (!response.ok) throw new Error('Failed to load auth state.');
     return (await response.json()) as AuthState;
   }
 
-  async function loadAppData(viewDate?: string, options?: { silent?: boolean }) {
-    if (!options?.silent) {
-      setLoading(true);
-    }
+  async function fetchDay(date: string): Promise<DayResponse> {
+    const response = await fetch(`/api/day?date=${encodeURIComponent(date)}`, {
+      headers: { accept: 'application/json' },
+    });
+
+    if (!response.ok) throw new Error('Failed to load selected day.');
+    return (await response.json()) as DayResponse;
+  }
+
+  async function fetchSettings(date: string): Promise<SettingsData> {
+    const response = await fetch(`/api/settings?date=${encodeURIComponent(date)}`, {
+      headers: { accept: 'application/json' },
+    });
+
+    if (!response.ok) throw new Error('Failed to load settings.');
+    return (await response.json()) as SettingsData;
+  }
+
+  async function loadAppData(viewDate?: string, nextSettingsDate?: string, options?: { silent?: boolean }) {
+    if (!options?.silent) setLoading(true);
 
     try {
       const response = await fetch('/api/bootstrap', {
@@ -159,17 +216,18 @@ export default function App() {
         setAuthState(state);
         setBootstrap(null);
         setDay(null);
+        setSettings(null);
+        setSettingsDrafts([]);
         setPushState(initialPushState);
         setSelectedDate('');
+        setSettingsDate('');
         if (state.stage === 'identity') {
           setSelectedUserId((current) => current || state.users[0]?.id || '');
         }
         return;
       }
 
-      if (!response.ok) {
-        throw new Error('Failed to load dashboard.');
-      }
+      if (!response.ok) throw new Error('Failed to load dashboard.');
 
       const data = (await response.json()) as BootstrapData;
       setBootstrap(data);
@@ -178,6 +236,9 @@ export default function App() {
       const targetDate = viewDate && viewDate >= data.startDate && viewDate <= data.todayDate
         ? viewDate
         : data.todayDate;
+      const targetSettingsDate = nextSettingsDate && nextSettingsDate >= data.settings.minDate
+        ? nextSettingsDate
+        : data.settings.date;
 
       if (targetDate === data.todayDate) {
         setDay(data.day);
@@ -188,6 +249,17 @@ export default function App() {
         setSelectedDate(dayResponse.selectedDate);
       }
 
+      if (targetSettingsDate === data.settings.date) {
+        setSettings(data.settings);
+        setSettingsDate(data.settings.date);
+        setSettingsDrafts(makeSettingsDrafts(data.settings));
+      } else {
+        const settingsResponse = await fetchSettings(targetSettingsDate);
+        setSettings(settingsResponse);
+        setSettingsDate(settingsResponse.date);
+        setSettingsDrafts(makeSettingsDrafts(settingsResponse));
+      }
+
       setAppError('');
     } catch (error) {
       console.error(error);
@@ -195,18 +267,6 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }
-
-  async function fetchDay(date: string): Promise<DayResponse> {
-    const response = await fetch(`/api/day?date=${encodeURIComponent(date)}`, {
-      headers: { accept: 'application/json' },
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to load selected day.');
-    }
-
-    return (await response.json()) as DayResponse;
   }
 
   async function handleUnlock(event: React.FormEvent<HTMLFormElement>) {
@@ -274,10 +334,13 @@ export default function App() {
       await fetch('/api/logout', { method: 'POST' });
       setBootstrap(null);
       setDay(null);
+      setSettings(null);
+      setSettingsDrafts([]);
       setAuthState({ stage: 'password' });
       setPushState(initialPushState);
       setPassword('');
       setSelectedDate('');
+      setSettingsDate('');
     } finally {
       setActionBusy(null);
     }
@@ -292,11 +355,8 @@ export default function App() {
         method: 'POST',
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to complete slot.');
-      }
-
-      await loadAppData(selectedDate || bootstrap.todayDate, { silent: true });
+      if (!response.ok) throw new Error('Failed to complete slot.');
+      await loadAppData(selectedDate || bootstrap.todayDate, settingsDate || bootstrap.todayDate, { silent: true });
     } catch (error) {
       console.error(error);
       setAppError('Unable to mark that dose complete.');
@@ -309,7 +369,68 @@ export default function App() {
     if (!bootstrap || !nextDate) return;
     setActionBusy('date');
     try {
-      await loadAppData(nextDate, { silent: true });
+      await loadAppData(nextDate, settingsDate || bootstrap.todayDate, { silent: true });
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleSettingsDateChange(nextDate: string) {
+    if (!nextDate) return;
+    setActionBusy('settings-date');
+    try {
+      const nextSettings = await fetchSettings(nextDate);
+      setSettings(nextSettings);
+      setSettingsDate(nextSettings.date);
+      setSettingsDrafts(makeSettingsDrafts(nextSettings));
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to load settings for that date.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function saveSettingsSlotDraft(slotKey: string) {
+    const draft = settingsDrafts.find((slot) => slot.key === slotKey);
+    if (!draft || !settingsDate) return;
+
+    setActionBusy(`settings-${slotKey}`);
+    try {
+      const response = await fetch('/api/settings/slot', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          date: settingsDate,
+          slotKey: draft.key,
+          time: draft.time,
+          skipped: draft.skipped,
+          reason: draft.reason || null,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to save settings slot.');
+
+      const data = (await response.json()) as SettingsResponse;
+      setSettings(data.settings);
+      setSettingsDrafts(makeSettingsDrafts(data.settings));
+
+      if (selectedDate === settingsDate) {
+        setDay(data.day);
+      }
+
+      if (bootstrap) {
+        setBootstrap({
+          ...bootstrap,
+          settings: data.settings,
+          day: selectedDate === settingsDate ? data.day : bootstrap.day,
+        });
+      }
+
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to save that schedule setting.');
     } finally {
       setActionBusy(null);
     }
@@ -406,7 +527,11 @@ export default function App() {
   }
 
   if (loading && !bootstrap && authState.stage === 'password') {
-    return <Shell><div className="panel muted">Loading…</div></Shell>;
+    return (
+      <Shell>
+        <div className="panel muted">Loading…</div>
+      </Shell>
+    );
   }
 
   if (!bootstrap) {
@@ -479,7 +604,7 @@ export default function App() {
           <div>
             <h1>{nextPending ? `${nextPending.label} still needs to be logged.` : 'Today is fully logged.'}</h1>
             <p>
-              Signed in as <strong>{bootstrap.me.name}</strong>. The app always opens on <strong>{bootstrap.todayDate}</strong>, and you can review back to {bootstrap.startDate}.
+              Signed in as <strong>{bootstrap.me.name}</strong>. The app always opens on today&apos;s date, and you can review history back to {bootstrap.startDate}.
             </p>
           </div>
           <button className="ghost" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>
@@ -531,30 +656,161 @@ export default function App() {
       </section>
 
       {day ? (
-        <>
-          <section className="panel">
-            <div className="panel-head">
-              <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
-              <span>{day.stats.completedCount} of {day.slots.length} logged</span>
+        <section className="panel">
+          <div className="panel-head">
+            <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
+            <span>{day.stats.completedCount} of {day.slots.length} logged</span>
+          </div>
+          <div className="stat-grid">
+            <StatCard label="Completed" value={String(day.stats.completedCount)} />
+            <StatCard label="Pending" value={String(day.stats.pendingCount)} />
+            <StatCard label="Skipped" value={String(day.stats.skippedCount)} />
+            <StatCard label="Average delta" value={formatDelta(day.stats.averageLatenessMinutes)} />
+            <StatCard label="Worst delta" value={formatDelta(day.stats.maxLatenessMinutes)} />
+          </div>
+          <div className="slots">
+            {day.slots.map((slot) => (
+              <SlotCard
+                key={slot.id}
+                slot={slot}
+                busy={actionBusy === slot.id}
+                onComplete={() => void handleComplete(slot.id)}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {settings ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Settings</h2>
+            <span>Future time overrides and boarding skips</span>
+          </div>
+          <div className="settings-grid">
+            <div className="settings-column">
+              <div className="date-controls">
+                <label className="login-form label-inline">
+                  Settings date
+                  <input
+                    type="date"
+                    value={settingsDate}
+                    min={settings.minDate}
+                    onChange={(event) => void handleSettingsDateChange(event.target.value)}
+                  />
+                </label>
+                <p className="small">Pick a future date, then adjust slot times or skip specific doses for boarding days.</p>
+              </div>
+              <div className="settings-slots">
+                {settingsDrafts.map((slot) => {
+                  const busy = actionBusy === `settings-${slot.key}`;
+                  return (
+                    <div className="settings-slot-card" key={slot.key}>
+                      <div className="slot-title">
+                        <strong>{slot.label}</strong>
+                        <span>Default {slot.defaultTime}</span>
+                      </div>
+                      <label className="settings-field">
+                        Time
+                        <input
+                          type="time"
+                          value={slot.time}
+                          onChange={(event) =>
+                            setSettingsDrafts((current) =>
+                              current.map((item) =>
+                                item.key === slot.key ? { ...item, time: event.target.value } : item,
+                              ),
+                            )
+                          }
+                          disabled={slot.skipped}
+                        />
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={slot.skipped}
+                          onChange={(event) =>
+                            setSettingsDrafts((current) =>
+                              current.map((item) =>
+                                item.key === slot.key ? { ...item, skipped: event.target.checked } : item,
+                              ),
+                            )
+                          }
+                        />
+                        Skip this slot
+                      </label>
+                      <label className="settings-field">
+                        Reason
+                        <input
+                          type="text"
+                          value={slot.reason}
+                          onChange={(event) =>
+                            setSettingsDrafts((current) =>
+                              current.map((item) =>
+                                item.key === slot.key ? { ...item, reason: event.target.value } : item,
+                              ),
+                            )
+                          }
+                          placeholder="Boarding, vet stay, etc."
+                        />
+                      </label>
+                      <div className="inline-actions">
+                        <button
+                          className="ghost"
+                          type="button"
+                          onClick={() =>
+                            setSettingsDrafts((current) =>
+                              current.map((item) =>
+                                item.key === slot.key
+                                  ? { ...item, time: item.defaultTime, skipped: false, reason: '' }
+                                  : item,
+                              ),
+                            )
+                          }
+                        >
+                          Reset
+                        </button>
+                        <button
+                          className="primary"
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void saveSettingsSlotDraft(slot.key)}
+                        >
+                          {busy ? 'Saving…' : 'Save'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <div className="stat-grid">
-              <StatCard label="Completed" value={String(day.stats.completedCount)} />
-              <StatCard label="Pending" value={String(day.stats.pendingCount)} />
-              <StatCard label="Average delta" value={formatDelta(day.stats.averageLatenessMinutes)} />
-              <StatCard label="Worst delta" value={formatDelta(day.stats.maxLatenessMinutes)} />
+
+            <div className="settings-column">
+              <div className="panel-head compact-head">
+                <h2>Upcoming custom dates</h2>
+                <span>{settings.upcomingCustomizations.length} entries</span>
+              </div>
+              <div className="activity">
+                {settings.upcomingCustomizations.length === 0 ? (
+                  <div className="muted">No future exceptions set.</div>
+                ) : (
+                  settings.upcomingCustomizations.map((item) => (
+                    <div className="activity-row" key={`${item.date}:${item.slotKey}`}>
+                      <div>
+                        <strong>{item.date}</strong> · {item.label}
+                      </div>
+                      <div className="status">
+                        {item.skipped
+                          ? `Skipped${item.reason ? `: ${item.reason}` : ''}`
+                          : `Time override: ${item.overrideTime}`}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-            <div className="slots">
-              {day.slots.map((slot) => (
-                <SlotCard
-                  key={slot.id}
-                  slot={slot}
-                  busy={actionBusy === slot.id}
-                  onComplete={() => void handleComplete(slot.id)}
-                />
-              ))}
-            </div>
-          </section>
-        </>
+          </div>
+        </section>
       ) : null}
 
       {bootstrap.overdue.length > 0 ? (
@@ -609,7 +865,9 @@ function SlotCard({
         <p>
           {slot.status === 'completed'
             ? `Completed by ${slot.completedByName ?? 'someone'} at ${formatTimestamp(slot.completedAt)}`
-            : 'Waiting for either person to log this dose.'}
+            : slot.status === 'skipped'
+              ? 'Skipped for this date. No reminder will fire for this slot.'
+              : 'Waiting for either person to log this dose.'}
         </p>
         {slot.status === 'completed' ? (
           <p className="delta-line">Difference from schedule: {formatDelta(slot.latenessMinutes)}</p>
@@ -619,6 +877,8 @@ function SlotCard({
         <button className="primary" type="button" disabled={busy} onClick={onComplete}>
           {busy ? 'Saving…' : 'Mark complete'}
         </button>
+      ) : slot.status === 'skipped' ? (
+        <div className="pill skipped">Skipped</div>
       ) : (
         <div className="pill done">Complete</div>
       )}
@@ -633,6 +893,17 @@ function StatCard({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function makeSettingsDrafts(settings: SettingsData): SettingsSlotDraft[] {
+  return settings.slots.map((slot) => ({
+    key: slot.key,
+    label: slot.label,
+    defaultTime: slot.defaultTime,
+    time: slot.overrideTime ?? slot.defaultTime,
+    skipped: slot.skipped,
+    reason: slot.reason ?? '',
+  }));
 }
 
 function base64UrlToArrayBuffer(base64Url: string): ArrayBuffer {

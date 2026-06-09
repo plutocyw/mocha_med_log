@@ -38,7 +38,7 @@ type SlotRow = {
   slot_key: string;
   slot_label: string;
   slot_time: string;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'skipped';
   completed_at: string | null;
   completed_by_name: string | null;
   last_notified_at: string | null;
@@ -51,9 +51,22 @@ type SubscriptionRow = {
   auth: string;
 };
 
+type OverrideRow = {
+  slot_date: string;
+  slot_key: string;
+  slot_time: string;
+};
+
+type SkippedRow = {
+  slot_date: string;
+  slot_key: string;
+  reason: string | null;
+};
+
 type DayStats = {
   completedCount: number;
   pendingCount: number;
+  skippedCount: number;
   averageLatenessMinutes: number | null;
   maxLatenessMinutes: number | null;
   minLatenessMinutes: number | null;
@@ -120,6 +133,14 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
 
     if (request.method === 'GET' && url.pathname === '/api/day') {
       return dayView(env, session, url);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/settings') {
+      return settingsView(env, url);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/settings/slot') {
+      return saveSettingsSlot(request, env);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/push/subscribe') {
@@ -252,9 +273,10 @@ async function bootstrap(
 
   await ensureScheduleWindow(env.DB, now, timezone);
 
-  const [day, overdue] = await Promise.all([
+  const [day, overdue, settings] = await Promise.all([
     getDayData(env.DB, todayDate, timezone),
     getOverdueSlots(env.DB, now, timezone),
+    getSettingsData(env.DB, todayDate, timezone, todayDate),
   ]);
 
   return json({
@@ -269,6 +291,7 @@ async function bootstrap(
     schedule: SLOT_DEFINITIONS,
     day,
     overdue,
+    settings,
   });
 }
 
@@ -301,6 +324,94 @@ async function dayView(
     selectedDate: requestedDate,
     day,
   });
+}
+
+async function settingsView(env: Env, url: URL): Promise<Response> {
+  const timezone = getTimezone(env);
+  const todayDate = getLocalDateTime(new Date(), timezone).date;
+  const requestedDate = String(url.searchParams.get('date') ?? '').trim() || todayDate;
+
+  if (!isIsoDate(requestedDate)) {
+    return json({ error: 'A valid date is required.' }, 400);
+  }
+
+  if (requestedDate < todayDate) {
+    return json({ error: 'Settings only support today or future dates.' }, 400);
+  }
+
+  const settings = await getSettingsData(env.DB, requestedDate, timezone, todayDate);
+  return json(settings);
+}
+
+async function saveSettingsSlot(request: Request, env: Env): Promise<Response> {
+  const timezone = getTimezone(env);
+  const todayDate = getLocalDateTime(new Date(), timezone).date;
+  const body = await request.json<{
+    date?: string;
+    slotKey?: string;
+    time?: string | null;
+    skipped?: boolean;
+    reason?: string | null;
+  }>().catch(() => null);
+
+  const slotDate = String(body?.date ?? '').trim();
+  const slotKey = String(body?.slotKey ?? '').trim();
+  const time = body?.time === null ? null : String(body?.time ?? '').trim();
+  const skipped = !!body?.skipped;
+  const reason = body?.reason ? String(body.reason).trim() : null;
+
+  if (!isIsoDate(slotDate) || slotDate < todayDate) {
+    return json({ error: 'Settings can only be changed for today or future dates.' }, 400);
+  }
+
+  const base = SLOT_DEFINITIONS.find((slot) => slot.key === slotKey);
+  if (!base) {
+    return json({ error: 'Invalid slot selected.' }, 400);
+  }
+
+  if (time && !isTimeString(time)) {
+    return json({ error: 'Time must be in HH:MM format.' }, 400);
+  }
+
+  const now = new Date().toISOString();
+
+  if (time && time !== base.time) {
+    await env.DB.prepare(
+      `INSERT INTO schedule_overrides (slot_date, slot_key, slot_time, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(slot_date, slot_key) DO UPDATE SET
+         slot_time = excluded.slot_time,
+         updated_at = excluded.updated_at`,
+    )
+      .bind(slotDate, slotKey, time, now)
+      .run();
+  } else {
+    await env.DB.prepare('DELETE FROM schedule_overrides WHERE slot_date = ?1 AND slot_key = ?2')
+      .bind(slotDate, slotKey)
+      .run();
+  }
+
+  if (skipped) {
+    await env.DB.prepare(
+      `INSERT INTO skipped_slots (slot_date, slot_key, reason, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+       ON CONFLICT(slot_date, slot_key) DO UPDATE SET
+         reason = excluded.reason,
+         updated_at = excluded.updated_at`,
+    )
+      .bind(slotDate, slotKey, reason, now)
+      .run();
+  } else {
+    await env.DB.prepare('DELETE FROM skipped_slots WHERE slot_date = ?1 AND slot_key = ?2')
+      .bind(slotDate, slotKey)
+      .run();
+  }
+
+  await ensureSlotsForDate(env.DB, slotDate);
+
+  const settings = await getSettingsData(env.DB, slotDate, timezone, todayDate);
+  const day = await getDayData(env.DB, slotDate, timezone);
+  return json({ settings, day });
 }
 
 async function savePushSubscription(
@@ -570,15 +681,46 @@ async function ensureScheduleWindow(db: D1Database, now: Date, timezone: string)
 async function ensureSlotsForDate(db: D1Database, slotDate: string): Promise<void> {
   if (slotDate < TRACKING_START_DATE) return;
 
+  const effectiveSlots = await getEffectiveSlotsForDate(db, slotDate);
   const now = new Date().toISOString();
   await db.batch(
-    SLOT_DEFINITIONS.map((slot) =>
+    effectiveSlots.map((slot) =>
       db.prepare(
-        `INSERT OR IGNORE INTO slots (
+        `INSERT INTO slots (
           id, slot_date, slot_key, slot_label, slot_time, status, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)`,
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+        ON CONFLICT(id) DO UPDATE SET
+          slot_label = excluded.slot_label,
+          slot_time = excluded.slot_time,
+          updated_at = excluded.updated_at,
+          status = CASE
+            WHEN slots.status = 'completed' THEN slots.status
+            ELSE excluded.status
+          END,
+          completed_at = CASE
+            WHEN excluded.status = 'skipped' THEN NULL
+            WHEN slots.status = 'completed' THEN slots.completed_at
+            ELSE NULL
+          END,
+          completed_by_user_id = CASE
+            WHEN excluded.status = 'skipped' THEN NULL
+            WHEN slots.status = 'completed' THEN slots.completed_by_user_id
+            ELSE NULL
+          END,
+          last_notified_at = CASE
+            WHEN excluded.status = 'skipped' THEN NULL
+            ELSE slots.last_notified_at
+          END`,
       )
-        .bind(`${slotDate}:${slot.key}`, slotDate, slot.key, slot.label, slot.time, now),
+        .bind(
+          `${slotDate}:${slot.key}`,
+          slotDate,
+          slot.key,
+          slot.label,
+          slot.time,
+          slot.skipped ? 'skipped' : 'pending',
+          now,
+        ),
     ),
   );
 }
@@ -655,7 +797,7 @@ function mapSlotRow(row: SlotRow, timezone: string) {
 }
 
 function summarizeDay(
-  slots: Array<{ status: 'pending' | 'completed'; latenessMinutes: number | null }>,
+  slots: Array<{ status: 'pending' | 'completed' | 'skipped'; latenessMinutes: number | null }>,
 ): DayStats {
   const completed = slots.filter((slot) => slot.status === 'completed' && slot.latenessMinutes !== null);
   const deltas = completed.map((slot) => slot.latenessMinutes as number);
@@ -663,6 +805,7 @@ function summarizeDay(
   return {
     completedCount: slots.filter((slot) => slot.status === 'completed').length,
     pendingCount: slots.filter((slot) => slot.status === 'pending').length,
+    skippedCount: slots.filter((slot) => slot.status === 'skipped').length,
     averageLatenessMinutes: deltas.length ? Math.round(deltas.reduce((sum, value) => sum + value, 0) / deltas.length) : null,
     maxLatenessMinutes: deltas.length ? Math.max(...deltas) : null,
     minLatenessMinutes: deltas.length ? Math.min(...deltas) : null,
@@ -683,6 +826,82 @@ function calculateLatenessMinutes(row: SlotRow, timezone: string): number | null
 async function listUsers(db: D1Database) {
   const rows = await db.prepare('SELECT id, name FROM users ORDER BY name ASC').all<UserRow>();
   return rows.results.map((user) => ({ id: user.id, name: user.name }));
+}
+
+async function getEffectiveSlotsForDate(db: D1Database, slotDate: string) {
+  const [overrideRows, skippedRows] = await Promise.all([
+    db.prepare('SELECT slot_date, slot_key, slot_time FROM schedule_overrides WHERE slot_date = ?1')
+      .bind(slotDate)
+      .all<OverrideRow>(),
+    db.prepare('SELECT slot_date, slot_key, reason FROM skipped_slots WHERE slot_date = ?1')
+      .bind(slotDate)
+      .all<SkippedRow>(),
+  ]);
+
+  const overrides = new Map(overrideRows.results.map((row) => [row.slot_key, row.slot_time]));
+  const skipped = new Map(skippedRows.results.map((row) => [row.slot_key, row.reason]));
+
+  return SLOT_DEFINITIONS.map((slot) => ({
+    key: slot.key,
+    label: slot.label,
+    defaultTime: slot.time,
+    time: overrides.get(slot.key) ?? slot.time,
+    skipped: skipped.has(slot.key),
+    reason: skipped.get(slot.key) ?? null,
+    hasOverride: overrides.has(slot.key),
+  }));
+}
+
+async function getSettingsData(
+  db: D1Database,
+  slotDate: string,
+  timezone: string,
+  todayDate: string,
+) {
+  const effectiveSlots = await getEffectiveSlotsForDate(db, slotDate);
+  const upcomingCustomizations = await db.prepare(
+    `SELECT
+      dates.slot_date,
+      dates.slot_key,
+      so.slot_time AS override_time,
+      ss.reason AS skip_reason
+     FROM (
+       SELECT slot_date, slot_key FROM schedule_overrides
+       UNION
+       SELECT slot_date, slot_key FROM skipped_slots
+     ) AS dates
+     LEFT JOIN schedule_overrides so
+       ON so.slot_date = dates.slot_date AND so.slot_key = dates.slot_key
+     LEFT JOIN skipped_slots ss
+       ON ss.slot_date = dates.slot_date AND ss.slot_key = dates.slot_key
+     WHERE dates.slot_date >= ?1
+     ORDER BY dates.slot_date ASC, dates.slot_key ASC`,
+  )
+    .bind(todayDate)
+    .all<{ slot_date: string; slot_key: string; override_time: string | null; skip_reason: string | null }>();
+
+  return {
+    date: slotDate,
+    minDate: todayDate,
+    timezone,
+    slots: effectiveSlots.map((slot) => ({
+      key: slot.key,
+      label: slot.label,
+      defaultTime: slot.defaultTime,
+      effectiveTime: slot.time,
+      overrideTime: slot.hasOverride ? slot.time : null,
+      skipped: slot.skipped,
+      reason: slot.reason,
+    })),
+    upcomingCustomizations: upcomingCustomizations.results.map((row) => ({
+      date: row.slot_date,
+      slotKey: row.slot_key,
+      label: SLOT_DEFINITIONS.find((slot) => slot.key === row.slot_key)?.label ?? row.slot_key,
+      overrideTime: row.override_time,
+      skipped: row.skip_reason !== null,
+      reason: row.skip_reason,
+    })),
+  };
 }
 
 async function readSession(request: Request, env: Env): Promise<SessionPayload | null> {
@@ -841,6 +1060,10 @@ function dayIndex(value: string): number {
 
 function isIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function isTimeString(value: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
 function encodeBase64Url(value: string): string {

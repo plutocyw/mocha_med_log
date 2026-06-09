@@ -14,6 +14,11 @@ The flow is:
 
 Either person can mark a slot complete. The app records who marked it, when it happened, and the time difference from the scheduled medication time. A Cloudflare Worker cron keeps sending Web Push reminders until the slot is completed.
 
+The settings page also supports:
+
+- changing medication time for a specific future date and slot
+- skipping specific future slots entirely, for example during boarding
+
 ## Stack
 
 - React + Vite PWA frontend

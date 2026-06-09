@@ -141,13 +141,54 @@ h2 {
 }
 
 .date-controls,
-.inline-actions {
+.inline-actions,
+.settings-grid,
+.settings-slots {
   display: grid;
   gap: 0.75rem;
 }
 
 .inline-actions {
   grid-template-columns: 1fr 1fr;
+}
+
+.settings-grid {
+  grid-template-columns: 1.3fr 1fr;
+  align-items: start;
+}
+
+.settings-column {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.settings-slot-card {
+  border: 1px solid rgba(111, 47, 29, 0.1);
+  border-radius: 20px;
+  padding: 0.95rem;
+  background: rgba(255, 255, 255, 0.55);
+  display: grid;
+  gap: 0.75rem;
+}
+
+.settings-field {
+  display: grid;
+  gap: 0.35rem;
+  color: #4c3528;
+  font-size: 0.93rem;
+}
+
+.checkbox-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  color: #4c3528;
+  font-size: 0.93rem;
+}
+
+.checkbox-row input {
+  width: 1rem;
+  height: 1rem;
 }
 
 .slot {
@@ -164,6 +205,10 @@ h2 {
 
 .slot.completed {
   background: linear-gradient(135deg, rgba(244, 236, 227, 1), rgba(233, 244, 228, 0.88));
+}
+
+.slot.skipped {
+  background: linear-gradient(135deg, rgba(241, 239, 234, 1), rgba(229, 226, 216, 0.88));
 }
 
 .slot-title {
@@ -207,6 +252,11 @@ h2 {
 .status.done,
 .pill.done {
   color: #1e6a3c;
+}
+
+.pill.skipped {
+  color: #6b5a43;
+  background: rgba(93, 82, 64, 0.12);
 }
 
 .status.wait {
@@ -285,6 +335,10 @@ select:focus {
   font-size: 0.88rem;
 }
 
+.compact-head {
+  margin-bottom: 0;
+}
+
 .primary:disabled,
 .ghost:disabled {
   opacity: 0.62;
@@ -331,6 +385,10 @@ select:focus {
 
   .stat-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
   }
 
   .hero-row,
