@@ -19,6 +19,7 @@ body,
 #root {
   margin: 0;
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -38,7 +39,6 @@ button {
 .shell {
   min-height: 100vh;
   position: relative;
-  overflow-x: hidden;
 }
 
 .chrome {

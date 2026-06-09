@@ -339,6 +339,7 @@ export default function App() {
       if (!response.ok) throw new Error('Failed to complete slot.');
       const dayResponse = await fetchDay(selectedDate || bootstrap.todayDate);
       setDay(dayResponse.day);
+      setBootstrap((prev) => prev ? { ...prev, overdue: prev.overdue.filter((s) => s.id !== slotId) } : prev);
       const statsData = await fetchStats(statsRange.startDate, statsRange.endDate);
       setStats(statsData);
       setAppError('');
@@ -487,7 +488,13 @@ export default function App() {
     }
     const permission = Notification.permission;
     const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
+    let subscription = await registration.pushManager.getSubscription();
+    if (permission === 'granted' && !subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToArrayBuffer(vapidPublicKey),
+      }).catch(() => null);
+    }
     if (permission === 'granted' && subscription) {
       await fetch('/api/push/subscribe', {
         method: 'POST',
