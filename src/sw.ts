@@ -35,12 +35,12 @@ self.addEventListener('push', (event) => {
   const title = payload?.title ?? 'Mocha Med Log';
   const options = {
     body: payload?.body,
-    icon: payload?.icon ?? '/icon-192.png',
-    badge: payload?.badge ?? '/icon-192.png',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: payload?.tag,
     renotify: payload?.renotify,
     requireInteraction: payload?.requireInteraction,
-    data: payload?.data,
+    data: { url: (payload as { url?: string } | undefined)?.url ?? '/' },
   } as NotificationOptions;
 
   event.waitUntil(self.registration.showNotification(title, options));

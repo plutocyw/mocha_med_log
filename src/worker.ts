@@ -1,4 +1,4 @@
-import { buildPushHTTPRequest, type PushSubscription } from '@pushforge/builder';
+import { buildPushPayload, type PushSubscription as WebPushSubscription } from '@block65/webcrypto-web-push';
 
 interface Env {
   ASSETS: Fetcher;
@@ -514,7 +514,7 @@ async function savePushSubscription(
   env: Env,
   session: SessionPayload & { uid: string; name: string },
 ): Promise<Response> {
-  const body = await request.json<PushSubscription & { expirationTime?: number | null }>().catch(() => null);
+  const body = await request.json<WebPushSubscription & { expirationTime?: number | null }>().catch(() => null);
   const subscription = normalizeSubscription(body);
   if (!subscription) {
     return json({ error: 'Invalid push subscription.' }, 400);
@@ -584,38 +584,12 @@ async function testPush(
 
   let delivered = 0;
   for (const subscription of subscriptions.results) {
-    try {
-      const { endpoint, headers, body } = await buildPushHTTPRequest({
-        privateJWK: env.VAPID_PRIVATE_KEY,
-        subscription: {
-          endpoint: subscription.endpoint,
-          keys: { p256dh: subscription.p256dh, auth: subscription.auth },
-        },
-        message: {
-          payload: {
-            title: 'Mocha Med Log',
-            body: 'Push notifications are working.',
-            tag: 'test',
-            icon: '/icon-192.png',
-            badge: '/icon-192.png',
-          },
-          adminContact: env.VAPID_SUBJECT,
-          options: { ttl: 60, urgency: 'normal' },
-        },
-      });
-
-      const response = await fetch(endpoint, { method: 'POST', headers, body });
-      if (response.ok) {
-        delivered += 1;
-      } else if (response.status === 404 || response.status === 410) {
-        await disableSubscriptionById(env.DB, subscription.id);
-      } else {
-        await markSubscriptionFailure(env.DB, subscription.id);
-      }
-    } catch (error) {
-      console.error('Test push failed', error);
-      await markSubscriptionFailure(env.DB, subscription.id);
-    }
+    const sent = await sendPush(env, subscription, {
+      title: 'Mocha Med Log',
+      body: 'Push notifications are working.',
+      tag: 'test',
+    });
+    if (sent) delivered += 1;
   }
 
   if (delivered === 0) {
@@ -722,68 +696,34 @@ async function runReminderSweep(env: Env, now: Date): Promise<void> {
   }
 }
 
-async function sendSlotReminder(
+async function sendPush(
   env: Env,
-  slot: Pick<SlotRow, 'id' | 'slot_date' | 'slot_label' | 'slot_time'>,
   subscription: SubscriptionRow,
+  message: { title: string; body: string; tag: string; requireInteraction?: boolean; renotify?: boolean; url?: string },
 ): Promise<boolean> {
   try {
-    const payload = {
-      title: 'Mocha medication due',
-      body: `${slot.slot_label} dose for ${slot.slot_date} is still waiting to be marked complete.`,
-      tag: `slot-${slot.id}`,
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
-      requireInteraction: true,
-      renotify: true,
-      data: {
-        slotId: slot.id,
-        url: '/',
-      },
+    const webPushSub: WebPushSubscription = {
+      endpoint: subscription.endpoint,
+      keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+      expirationTime: null,
     };
-
-    const { endpoint, headers, body } = await buildPushHTTPRequest({
-      privateJWK: env.VAPID_PRIVATE_KEY,
-      subscription: {
-        endpoint: subscription.endpoint,
-        keys: {
-          p256dh: subscription.p256dh,
-          auth: subscription.auth,
-        },
-      },
-      message: {
-        payload,
-        adminContact: env.VAPID_SUBJECT,
-        options: {
-          ttl: 5 * 60,
-          urgency: 'high',
-          topic: `slot-${slot.id}`,
-        },
-      },
-    });
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body,
-    });
+    const init = await buildPushPayload(
+      { data: JSON.stringify(message), options: { ttl: 5 * 60 } },
+      webPushSub,
+      { subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY },
+    );
+    const response = await fetch(subscription.endpoint, init as unknown as RequestInit);
 
     if (response.ok) {
       await env.DB.prepare(
-        `UPDATE push_subscriptions
-         SET failure_count = 0, last_success_at = ?1, updated_at = ?1
-         WHERE id = ?2`,
-      )
-        .bind(new Date().toISOString(), subscription.id)
-        .run();
+        `UPDATE push_subscriptions SET failure_count = 0, last_success_at = ?1, updated_at = ?1 WHERE id = ?2`,
+      ).bind(new Date().toISOString(), subscription.id).run();
       return true;
     }
-
     if (response.status === 404 || response.status === 410) {
       await disableSubscriptionById(env.DB, subscription.id);
       return false;
     }
-
     await markSubscriptionFailure(env.DB, subscription.id);
     return false;
   } catch (error) {
@@ -791,6 +731,21 @@ async function sendSlotReminder(
     await markSubscriptionFailure(env.DB, subscription.id);
     return false;
   }
+}
+
+async function sendSlotReminder(
+  env: Env,
+  slot: Pick<SlotRow, 'id' | 'slot_date' | 'slot_label' | 'slot_time'>,
+  subscription: SubscriptionRow,
+): Promise<boolean> {
+  return sendPush(env, subscription, {
+    title: 'Mocha medication due',
+    body: `${slot.slot_label} dose for ${slot.slot_date} is still waiting to be marked complete.`,
+    tag: `slot-${slot.id}`,
+    requireInteraction: true,
+    renotify: true,
+    url: '/',
+  });
 }
 
 async function markSubscriptionFailure(db: D1Database, id: string): Promise<void> {
@@ -1260,14 +1215,15 @@ function normalizeIdentity(value: string): string {
 }
 
 function normalizeSubscription(
-  value: (PushSubscription & { expirationTime?: number | null }) | null,
-): PushSubscription | null {
+  value: (WebPushSubscription & { expirationTime?: number | null }) | null,
+): WebPushSubscription | null {
   if (!value?.endpoint || !value?.keys?.p256dh || !value?.keys?.auth) {
     return null;
   }
 
   return {
     endpoint: String(value.endpoint),
+    expirationTime: value.expirationTime ?? null,
     keys: {
       p256dh: String(value.keys.p256dh),
       auth: String(value.keys.auth),
