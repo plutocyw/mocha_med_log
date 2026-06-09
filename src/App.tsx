@@ -585,35 +585,19 @@ export default function App() {
 
       {view === 'home' ? (
         <>
-          <section className="grid compact-home-grid">
-            <article className="panel">
-              <div className="panel-head">
-                <h2>Today</h2>
-                <button className="ghost small-button" type="button" onClick={() => void handleDayChange(bootstrap.todayDate)} disabled={selectedDate === bootstrap.todayDate || actionBusy === 'home-date'}>Today</button>
-              </div>
-              <div className="date-controls">
-                <input type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
-              </div>
-            </article>
-            <article className="panel">
-              <div className="panel-head">
-                <h2>Notifications</h2>
-                <span>{pushState.subscribed ? 'Active' : 'Setup'}</span>
-              </div>
-              <p className="small compact-copy">{pushState.message}</p>
-              <button className="primary compact-button" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
-                {pushState.subscribed ? 'Refresh device subscription' : 'Enable notifications'}
-              </button>
-            </article>
-          </section>
-
           {day ? (
             <section className="panel compact-day-panel">
-              <div className="panel-head">
-                <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
-                <span>{day.stats.completedCount} of {day.slots.length} logged</span>
+              <div className="home-day-top">
+                <div>
+                  <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
+                  <div className="small">{day.date === bootstrap.todayDate ? 'Home opens on today by default.' : 'Viewing past record.'}</div>
+                </div>
+                <div className="home-day-actions">
+                  <input type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
+                  <button className="ghost small-button" type="button" onClick={() => void handleDayChange(bootstrap.todayDate)} disabled={selectedDate === bootstrap.todayDate || actionBusy === 'home-date'}>Today</button>
+                </div>
               </div>
-              <div className="stat-grid compact-stats">
+              <div className="compact-metric-strip">
                 <StatCard label="Completed" value={String(day.stats.completedCount)} />
                 <StatCard label="Pending" value={String(day.stats.pendingCount)} />
                 <StatCard label="Skipped" value={String(day.stats.skippedCount)} />
@@ -730,6 +714,17 @@ export default function App() {
 
       {view === 'settings' && settings ? (
         <>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Notifications</h2>
+              <span>{pushState.subscribed ? 'Active' : 'Setup'}</span>
+            </div>
+            <p className="small compact-copy">{pushState.message}</p>
+            <button className="primary compact-button" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
+              {pushState.subscribed ? 'Refresh device subscription' : 'Enable notifications'}
+            </button>
+          </section>
+
           <section className="panel">
             <div className="panel-head">
               <h2>Batch Settings</h2>

@@ -194,6 +194,20 @@ h2 {
   padding-top: 0.95rem;
 }
 
+.home-day-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.85rem;
+  align-items: start;
+  margin-bottom: 0.85rem;
+}
+
+.home-day-actions {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+}
+
 .range-grid {
   grid-template-columns: 1fr 1fr;
 }
@@ -314,16 +328,13 @@ h2 {
   margin-bottom: 1rem;
 }
 
-.compact-stats {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
 .stat-card {
   border: 1px solid rgba(111, 47, 29, 0.1);
   border-radius: 18px;
   padding: 0.75rem;
   background: rgba(255, 255, 255, 0.54);
-  min-height: 110px;
+  min-height: 94px;
+  min-width: 132px;
 }
 
 .stat-card span {
@@ -453,17 +464,21 @@ select:focus {
 
 .bottom-nav {
   position: fixed;
-  left: 0;
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, calc(100% - 1rem));
   bottom: 0;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 0.65rem;
-  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+  gap: 0.5rem;
+  padding: 0.55rem calc(0.55rem + env(safe-area-inset-left)) calc(0.55rem + env(safe-area-inset-bottom)) calc(0.55rem + env(safe-area-inset-right));
   background: rgba(247, 239, 231, 0.95);
   backdrop-filter: blur(18px);
-  border-top: 1px solid rgba(111, 47, 29, 0.1);
-  box-shadow: 0 -12px 30px rgba(94, 54, 35, 0.08);
+  border: 1px solid rgba(111, 47, 29, 0.1);
+  border-bottom: 0;
+  border-top-left-radius: 22px;
+  border-top-right-radius: 22px;
+  box-shadow: 0 -10px 24px rgba(94, 54, 35, 0.08);
   z-index: 20;
 }
 
@@ -471,15 +486,31 @@ select:focus {
   border: 1px solid rgba(111, 47, 29, 0.12);
   background: rgba(255, 255, 255, 0.72);
   color: #5c2e1e;
-  border-radius: 16px;
-  padding: 0.8rem 0.65rem;
+  border-radius: 14px;
+  padding: 0.65rem 0.5rem;
   font-weight: 700;
+  font-size: 0.95rem;
 }
 
 .bottom-nav-button.active {
   background: linear-gradient(135deg, #6f2f1d, #964127);
   color: #fffaf3;
   border-color: transparent;
+}
+
+.compact-metric-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(132px, 1fr);
+  gap: 0.65rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+  margin-bottom: 1rem;
+  scrollbar-width: none;
+}
+
+.compact-metric-strip::-webkit-scrollbar {
+  display: none;
 }
 
 @media (max-width: 760px) {
@@ -492,10 +523,6 @@ select:focus {
   }
 
   .stat-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .compact-stats {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -524,6 +551,12 @@ select:focus {
 
   .compact-home-grid {
     grid-template-columns: 1fr;
+  }
+
+  .home-day-top,
+  .home-day-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .status {
