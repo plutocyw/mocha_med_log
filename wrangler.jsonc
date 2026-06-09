@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mocha-med-log",
+  "account_id": "83170f7d4c8d2e8904d8d3f417726504",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-06-08",
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mocha_med_log",
+      "database_id": "b0111dd4-ec0f-4feb-863f-870bf0619a60"
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "mocha-med-log.ipluto.net",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "TIMEZONE": "America/Los_Angeles",
+    "REMINDER_INTERVAL_MINUTES": "30"
+  },
+  "triggers": {
+    "crons": ["*/10 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
