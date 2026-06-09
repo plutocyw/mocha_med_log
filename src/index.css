@@ -54,7 +54,7 @@ button {
   position: relative;
   width: min(980px, calc(100% - 2rem));
   margin: 0 auto;
-  padding: max(1.25rem, env(safe-area-inset-top)) 0 max(1.5rem, env(safe-area-inset-bottom));
+  padding: max(1.25rem, env(safe-area-inset-top)) 0 calc(6rem + env(safe-area-inset-bottom));
   display: grid;
   gap: 1rem;
 }
@@ -169,7 +169,6 @@ h2 {
 .settings-grid,
 .settings-slots,
 .range-grid,
-.nav-buttons,
 .bar-chart {
   display: grid;
   gap: 0.75rem;
@@ -177,27 +176,6 @@ h2 {
 
 .inline-actions {
   grid-template-columns: 1fr 1fr;
-}
-
-.nav-panel {
-  padding: 0.8rem;
-}
-
-.compact-nav {
-  padding: 0.65rem;
-}
-
-.nav-buttons {
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.nav-button {
-  border: 1px solid rgba(111, 47, 29, 0.12);
-  background: rgba(255, 255, 255, 0.65);
-  color: #5c2e1e;
-  border-radius: 16px;
-  padding: 0.85rem 1rem;
-  font-weight: 600;
 }
 
 .compact-home-grid {
@@ -214,12 +192,6 @@ h2 {
 
 .compact-day-panel {
   padding-top: 0.95rem;
-}
-
-.nav-button.active {
-  background: linear-gradient(135deg, #6f2f1d, #964127);
-  color: #fffaf3;
-  border-color: transparent;
 }
 
 .range-grid {
@@ -479,6 +451,37 @@ select:focus {
   bottom: 1rem;
 }
 
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.65rem;
+  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+  background: rgba(247, 239, 231, 0.95);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid rgba(111, 47, 29, 0.1);
+  box-shadow: 0 -12px 30px rgba(94, 54, 35, 0.08);
+  z-index: 20;
+}
+
+.bottom-nav-button {
+  border: 1px solid rgba(111, 47, 29, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: #5c2e1e;
+  border-radius: 16px;
+  padding: 0.8rem 0.65rem;
+  font-weight: 700;
+}
+
+.bottom-nav-button.active {
+  background: linear-gradient(135deg, #6f2f1d, #964127);
+  color: #fffaf3;
+  border-color: transparent;
+}
+
 @media (max-width: 760px) {
   .content {
     width: min(100% - 1rem, 980px);
@@ -496,7 +499,6 @@ select:focus {
     grid-template-columns: 1fr 1fr;
   }
 
-  .nav-buttons,
   .range-grid {
     grid-template-columns: 1fr;
   }

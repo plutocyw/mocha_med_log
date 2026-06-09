@@ -583,14 +583,6 @@ export default function App() {
         </div>
       </section>
 
-      <nav className="panel nav-panel compact-nav">
-        <div className="nav-buttons">
-          <button className={view === 'home' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('home')}>Home</button>
-          <button className={view === 'stats' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('stats')}>Stats</button>
-          <button className={view === 'settings' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('settings')}>Settings</button>
-        </div>
-      </nav>
-
       {view === 'home' ? (
         <>
           <section className="grid compact-home-grid">
@@ -833,6 +825,18 @@ export default function App() {
       ) : null}
 
       {appError ? <div className="toast">{appError}</div> : null}
+
+      <nav className="bottom-nav">
+        <button className={view === 'home' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('home')}>
+          <span>Home</span>
+        </button>
+        <button className={view === 'stats' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('stats')}>
+          <span>Stats</span>
+        </button>
+        <button className={view === 'settings' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('settings')}>
+          <span>Settings</span>
+        </button>
+      </nav>
     </Shell>
   );
 }
