@@ -435,6 +435,22 @@ export default function App() {
     }
   }
 
+  async function handleTestPush() {
+    setActionBusy('test-push');
+    setAppError('');
+    try {
+      const response = await fetch('/api/push/test', { method: 'POST' });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        setAppError(data.error ?? 'Test push failed.');
+      }
+    } catch {
+      setAppError('Test push failed.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   async function enableNotifications() {
     if (!bootstrap) return;
     setActionBusy('notifications');
@@ -727,9 +743,14 @@ export default function App() {
               <span>{pushState.subscribed ? 'Active' : 'Setup'}</span>
             </div>
             <p className="small compact-copy">{pushState.message}</p>
-            <button className="primary compact-button" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
-              {pushState.subscribed ? 'Refresh device subscription' : 'Enable notifications'}
-            </button>
+            <div className="inline-actions">
+              <button className="primary compact-button" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
+                {actionBusy === 'notifications' ? 'Saving…' : pushState.subscribed ? 'Refresh subscription' : 'Enable notifications'}
+              </button>
+              <button className="ghost compact-button" type="button" onClick={() => void handleTestPush()} disabled={actionBusy === 'test-push' || !pushState.subscribed}>
+                {actionBusy === 'test-push' ? 'Sending…' : 'Send test'}
+              </button>
+            </div>
           </section>
 
           <section className="panel">

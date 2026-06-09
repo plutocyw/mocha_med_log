@@ -163,6 +163,10 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
       return savePushSubscription(request, env, session);
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/push/test') {
+      return testPush(env, session);
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/push/unsubscribe') {
       return disablePushSubscription(request, env);
     }
@@ -560,6 +564,63 @@ async function disablePushSubscription(request: Request, env: Env): Promise<Resp
   await env.DB.prepare('UPDATE push_subscriptions SET disabled_at = ?1, updated_at = ?1 WHERE endpoint = ?2')
     .bind(new Date().toISOString(), endpoint)
     .run();
+
+  return json({ ok: true });
+}
+
+async function testPush(
+  env: Env,
+  session: SessionPayload & { uid: string; name: string },
+): Promise<Response> {
+  const subscriptions = await env.DB.prepare(
+    `SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?1 AND disabled_at IS NULL`,
+  )
+    .bind(session.uid)
+    .all<SubscriptionRow>();
+
+  if (!subscriptions.results.length) {
+    return json({ error: 'No active subscription found for your account. Enable notifications first.' }, 400);
+  }
+
+  let delivered = 0;
+  for (const subscription of subscriptions.results) {
+    try {
+      const { endpoint, headers, body } = await buildPushHTTPRequest({
+        privateJWK: env.VAPID_PRIVATE_KEY,
+        subscription: {
+          endpoint: subscription.endpoint,
+          keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+        },
+        message: {
+          payload: {
+            title: 'Mocha Med Log',
+            body: 'Push notifications are working.',
+            tag: 'test',
+            icon: '/icon-192.png',
+            badge: '/icon-192.png',
+          },
+          adminContact: env.VAPID_SUBJECT,
+          options: { ttl: 60, urgency: 'normal' },
+        },
+      });
+
+      const response = await fetch(endpoint, { method: 'POST', headers, body });
+      if (response.ok) {
+        delivered += 1;
+      } else if (response.status === 404 || response.status === 410) {
+        await disableSubscriptionById(env.DB, subscription.id);
+      } else {
+        await markSubscriptionFailure(env.DB, subscription.id);
+      }
+    } catch (error) {
+      console.error('Test push failed', error);
+      await markSubscriptionFailure(env.DB, subscription.id);
+    }
+  }
+
+  if (delivered === 0) {
+    return json({ error: 'Push delivery failed — the subscription may have expired. Try re-enabling notifications.' }, 500);
+  }
 
   return json({ ok: true });
 }
