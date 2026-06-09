@@ -6,7 +6,13 @@ PWA for two people to track whether Mocha's medication was given at:
 - `4:30 PM`
 - `11:30 PM`
 
-Either signed-in user can mark a slot complete. The app records who marked it and when. A Cloudflare Worker cron keeps sending Web Push reminders until the slot is completed.
+The flow is:
+
+- enter the shared site password
+- choose whether this is `Johnny` or `Pai`
+- log medication on the main screen
+
+Either person can mark a slot complete. The app records who marked it, when it happened, and the time difference from the scheduled medication time. A Cloudflare Worker cron keeps sending Web Push reminders until the slot is completed.
 
 ## Stack
 
@@ -88,6 +94,7 @@ npx wrangler dev
 
 ## Notes
 
-- Reminder cadence defaults to every `30` minutes. Change `REMINDER_INTERVAL_MINUTES` in [wrangler.jsonc](/Users/pluto/github/mocha_med_log/wrangler.jsonc:1) if you want a different repeat interval.
+- Reminder cadence defaults to every `5` minutes. Change `REMINDER_INTERVAL_MINUTES` in [wrangler.jsonc](/Users/pluto/github/mocha_med_log/wrangler.jsonc:1) if you want a different repeat interval.
 - iPhone and iPad push notifications only work after the PWA is installed with **Add to Home Screen**.
-- The Worker cron in [wrangler.jsonc](/Users/pluto/github/mocha_med_log/wrangler.jsonc:1) is currently set to run every `10` minutes.
+- The Worker cron in [wrangler.jsonc](/Users/pluto/github/mocha_med_log/wrangler.jsonc:1) is currently set to run every `5` minutes.
+- The app only tracks dates starting on `2026-06-08`.

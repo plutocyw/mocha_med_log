@@ -21,14 +21,14 @@ type JsonValue =
   | JsonValue[];
 
 type SessionPayload = {
-  uid: string;
-  name: string;
   exp: number;
+  unlocked?: boolean;
+  uid?: string;
+  name?: string;
 };
 
 type UserRow = {
   id: string;
-  username: string;
   name: string;
 };
 
@@ -46,18 +46,24 @@ type SlotRow = {
 
 type SubscriptionRow = {
   id: string;
-  user_id: string;
   endpoint: string;
-  expiration_time: number | null;
   p256dh: string;
   auth: string;
-  failure_count: number;
+};
+
+type DayStats = {
+  completedCount: number;
+  pendingCount: number;
+  averageLatenessMinutes: number | null;
+  maxLatenessMinutes: number | null;
+  minLatenessMinutes: number | null;
 };
 
 const COOKIE_NAME = 'mocha_med_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const DEFAULT_TIMEZONE = 'America/Los_Angeles';
-const DEFAULT_REMINDER_INTERVAL_MINUTES = 30;
+const DEFAULT_REMINDER_INTERVAL_MINUTES = 5;
+const TRACKING_START_DATE = '2026-06-08';
 const SLOT_DEFINITIONS = [
   { key: 'morning', label: '8:30 AM', time: '08:30' },
   { key: 'afternoon', label: '4:30 PM', time: '16:30' },
@@ -87,8 +93,12 @@ export default {
 
 async function handleApiRequest(request: Request, env: Env, url: URL): Promise<Response> {
   try {
-    if (request.method === 'GET' && url.pathname === '/api/auth/options') {
-      return authOptions(env);
+    if (request.method === 'GET' && url.pathname === '/api/auth/state') {
+      return authState(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/unlock') {
+      return unlock(request, env);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/login') {
@@ -100,13 +110,16 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
     }
 
     const session = await readSession(request, env);
-
-    if (!session) {
+    if (!isPersonSession(session)) {
       return json({ error: 'Authentication required.' }, 401);
     }
 
     if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
       return bootstrap(env, session);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/day') {
+      return dayView(env, session, url);
     }
 
     if (request.method === 'POST' && url.pathname === '/api/push/subscribe') {
@@ -129,25 +142,34 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
   }
 }
 
-async function login(request: Request, env: Env): Promise<Response> {
-  const body = await request
-    .json<{ userId?: string; password?: string }>()
-    .catch(() => null);
-  const userId = normalizeIdentity(body?.userId ?? '');
-  const password = String(body?.password ?? '');
+async function authState(request: Request, env: Env): Promise<Response> {
+  const session = await readSession(request, env);
 
-  if (!userId || !password) {
-    return json({ error: 'Password and person are required.' }, 400);
+  if (!session) {
+    return json({ stage: 'password' });
   }
 
-  const row = await env.DB.prepare(
-    'SELECT id, username, name FROM users WHERE id = ?1 LIMIT 1',
-  )
-    .bind(userId)
-    .first<UserRow>();
+  if (isPersonSession(session)) {
+    return json({
+      stage: 'ready',
+      me: { id: session.uid, name: session.name },
+    });
+  }
 
-  if (!row) {
-    return json({ error: 'Invalid person selected.' }, 401);
+  if (session.unlocked) {
+    const users = await listUsers(env.DB);
+    return json({ stage: 'identity', users });
+  }
+
+  return json({ stage: 'password' });
+}
+
+async function unlock(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<{ password?: string }>().catch(() => null);
+  const password = String(body?.password ?? '');
+
+  if (!password) {
+    return json({ error: 'Password is required.' }, 400);
   }
 
   if (!timingSafeEqual(password, env.SITE_PASSWORD)) {
@@ -156,6 +178,44 @@ async function login(request: Request, env: Env): Promise<Response> {
 
   const token = await createSessionToken(
     {
+      unlocked: true,
+      exp: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE,
+    },
+    env,
+  );
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      ...jsonHeaders,
+      'set-cookie': serializeCookie(COOKIE_NAME, token, SESSION_MAX_AGE),
+    },
+  });
+}
+
+async function login(request: Request, env: Env): Promise<Response> {
+  const session = await readSession(request, env);
+  if (!session?.unlocked) {
+    return json({ error: 'Enter the site password first.' }, 401);
+  }
+
+  const body = await request.json<{ userId?: string }>().catch(() => null);
+  const userId = normalizeIdentity(body?.userId ?? '');
+  if (!userId) {
+    return json({ error: 'Choose who is using the app.' }, 400);
+  }
+
+  const row = await env.DB.prepare('SELECT id, name FROM users WHERE id = ?1 LIMIT 1')
+    .bind(userId)
+    .first<UserRow>();
+
+  if (!row) {
+    return json({ error: 'Invalid person selected.' }, 401);
+  }
+
+  const token = await createSessionToken(
+    {
+      unlocked: true,
       uid: row.id,
       name: row.name,
       exp: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE,
@@ -172,19 +232,6 @@ async function login(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function authOptions(env: Env): Promise<Response> {
-  const users = await env.DB.prepare(
-    'SELECT id, username, name FROM users ORDER BY name ASC',
-  ).all<UserRow>();
-
-  return json({
-    users: users.results.map((user) => ({
-      id: user.id,
-      name: user.name,
-    })),
-  });
-}
-
 function logout(): Response {
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,
@@ -195,30 +242,71 @@ function logout(): Response {
   });
 }
 
-async function bootstrap(env: Env, session: SessionPayload): Promise<Response> {
+async function bootstrap(
+  env: Env,
+  session: SessionPayload & { uid: string; name: string },
+): Promise<Response> {
   const now = new Date();
   const timezone = getTimezone(env);
-  await ensureScheduleWindow(env.DB, now, timezone);
-  const dashboard = await getDashboard(env.DB, now, timezone);
-  const reminderIntervalMinutes = getReminderIntervalMinutes(env);
+  const todayDate = getLocalDateTime(now, timezone).date;
 
-  const payload = {
+  await ensureScheduleWindow(env.DB, now, timezone);
+
+  const [day, overdue] = await Promise.all([
+    getDayData(env.DB, todayDate, timezone),
+    getOverdueSlots(env.DB, now, timezone),
+  ]);
+
+  return json({
     me: { id: session.uid, name: session.name },
     timezone,
     vapidPublicKey: env.VAPID_PUBLIC_KEY,
-    reminderIntervalMinutes,
-    schedule: SLOT_DEFINITIONS,
+    reminderIntervalMinutes: getReminderIntervalMinutes(env),
     generatedAt: now.toISOString(),
-    ...dashboard,
-  };
+    startDate: TRACKING_START_DATE,
+    todayDate,
+    selectedDate: todayDate,
+    schedule: SLOT_DEFINITIONS,
+    day,
+    overdue,
+  });
+}
 
-  return json(payload);
+async function dayView(
+  env: Env,
+  session: SessionPayload & { uid: string; name: string },
+  url: URL,
+): Promise<Response> {
+  const timezone = getTimezone(env);
+  const now = new Date();
+  const todayDate = getLocalDateTime(now, timezone).date;
+  const requestedDate = String(url.searchParams.get('date') ?? '').trim();
+
+  if (!isIsoDate(requestedDate)) {
+    return json({ error: 'A valid date is required.' }, 400);
+  }
+
+  if (requestedDate < TRACKING_START_DATE || requestedDate > todayDate) {
+    return json({ error: 'Date is out of range.' }, 400);
+  }
+
+  if (requestedDate >= TRACKING_START_DATE) {
+    await ensureSlotsForDate(env.DB, requestedDate);
+  }
+
+  const day = await getDayData(env.DB, requestedDate, timezone);
+
+  return json({
+    me: { id: session.uid, name: session.name },
+    selectedDate: requestedDate,
+    day,
+  });
 }
 
 async function savePushSubscription(
   request: Request,
   env: Env,
-  session: SessionPayload,
+  session: SessionPayload & { uid: string; name: string },
 ): Promise<Response> {
   const body = await request.json<PushSubscription & { expirationTime?: number | null }>().catch(() => null);
   const subscription = normalizeSubscription(body);
@@ -267,9 +355,7 @@ async function disablePushSubscription(request: Request, env: Env): Promise<Resp
     return json({ error: 'Endpoint is required.' }, 400);
   }
 
-  await env.DB.prepare(
-    'UPDATE push_subscriptions SET disabled_at = ?1, updated_at = ?1 WHERE endpoint = ?2',
-  )
+  await env.DB.prepare('UPDATE push_subscriptions SET disabled_at = ?1, updated_at = ?1 WHERE endpoint = ?2')
     .bind(new Date().toISOString(), endpoint)
     .run();
 
@@ -278,7 +364,7 @@ async function disablePushSubscription(request: Request, env: Env): Promise<Resp
 
 async function completeSlot(
   env: Env,
-  session: SessionPayload,
+  session: SessionPayload & { uid: string; name: string },
   slotId: string,
 ): Promise<Response> {
   const now = new Date().toISOString();
@@ -288,9 +374,11 @@ async function completeSlot(
           completed_at = ?1,
           completed_by_user_id = ?2,
           updated_at = ?1
-      WHERE id = ?3 AND status = 'pending'`,
+      WHERE id = ?3
+        AND slot_date >= ?4
+        AND status = 'pending'`,
   )
-    .bind(now, session.uid, slotId)
+    .bind(now, session.uid, slotId, TRACKING_START_DATE)
     .run();
 
   const slot = await env.DB.prepare(
@@ -304,10 +392,10 @@ async function completeSlot(
       slots.completed_at,
       users.name AS completed_by_name,
       slots.last_notified_at
-    FROM slots
-    LEFT JOIN users ON users.id = slots.completed_by_user_id
-    WHERE slots.id = ?1
-    LIMIT 1`,
+     FROM slots
+     LEFT JOIN users ON users.id = slots.completed_by_user_id
+     WHERE slots.id = ?1
+     LIMIT 1`,
   )
     .bind(slotId)
     .first<SlotRow>();
@@ -316,7 +404,7 @@ async function completeSlot(
     return json({ error: 'Slot not found.' }, 404);
   }
 
-  return json({ slot: mapSlotRow(slot) });
+  return json({ slot: mapSlotRow(slot, getTimezone(env)) });
 }
 
 async function runReminderSweep(env: Env, now: Date): Promise<void> {
@@ -328,10 +416,11 @@ async function runReminderSweep(env: Env, now: Date): Promise<void> {
     `SELECT id, slot_date, slot_key, slot_label, slot_time, status, completed_at, NULL AS completed_by_name, last_notified_at
      FROM slots
      WHERE status = 'pending'
-       AND (slot_date < ?1 OR (slot_date = ?1 AND slot_time <= ?2))
+       AND slot_date >= ?1
+       AND (slot_date < ?2 OR (slot_date = ?2 AND slot_time <= ?3))
      ORDER BY slot_date ASC, slot_time ASC`,
   )
-    .bind(local.date, local.time)
+    .bind(TRACKING_START_DATE, local.date, local.time)
     .all<SlotRow>();
 
   if (!dueSlots.results.length) {
@@ -339,7 +428,7 @@ async function runReminderSweep(env: Env, now: Date): Promise<void> {
   }
 
   const activeSubscriptions = await env.DB.prepare(
-    `SELECT id, user_id, endpoint, expiration_time, p256dh, auth, failure_count
+    `SELECT id, endpoint, p256dh, auth
      FROM push_subscriptions
      WHERE disabled_at IS NULL`,
   ).all<SubscriptionRow>();
@@ -363,9 +452,7 @@ async function runReminderSweep(env: Env, now: Date): Promise<void> {
 
     if (delivered > 0) {
       const sentAt = new Date().toISOString();
-      await env.DB.prepare(
-        'UPDATE slots SET last_notified_at = ?1, updated_at = ?1 WHERE id = ?2',
-      )
+      await env.DB.prepare('UPDATE slots SET last_notified_at = ?1, updated_at = ?1 WHERE id = ?2')
         .bind(sentAt, slot.id)
         .run();
     }
@@ -379,7 +466,7 @@ async function sendSlotReminder(
 ): Promise<boolean> {
   try {
     const payload = {
-      title: `Mocha medication due`,
+      title: 'Mocha medication due',
       body: `${slot.slot_label} dose for ${slot.slot_date} is still waiting to be marked complete.`,
       tag: `slot-${slot.id}`,
       icon: '/icon-192.png',
@@ -405,7 +492,7 @@ async function sendSlotReminder(
         payload,
         adminContact: env.VAPID_SUBJECT,
         options: {
-          ttl: 60 * 60,
+          ttl: 5 * 60,
           urgency: 'high',
           topic: `slot-${slot.id}`,
         },
@@ -469,105 +556,90 @@ async function disableSubscriptionById(db: D1Database, id: string): Promise<void
 }
 
 async function ensureScheduleWindow(db: D1Database, now: Date, timezone: string): Promise<void> {
-  const current = getLocalDateTime(now, timezone).date;
   const dates = [
     getOffsetLocalDate(now, timezone, -1),
-    current,
+    getLocalDateTime(now, timezone).date,
     getOffsetLocalDate(now, timezone, 1),
-  ];
+  ].filter((value) => value >= TRACKING_START_DATE);
 
-  for (const slotDate of dates) {
-    await ensureSlotsForDate(db, slotDate);
+  for (const date of dates) {
+    await ensureSlotsForDate(db, date);
   }
 }
 
 async function ensureSlotsForDate(db: D1Database, slotDate: string): Promise<void> {
+  if (slotDate < TRACKING_START_DATE) return;
+
   const now = new Date().toISOString();
   await db.batch(
     SLOT_DEFINITIONS.map((slot) =>
-      db
-        .prepare(
-          `INSERT OR IGNORE INTO slots (
-            id, slot_date, slot_key, slot_label, slot_time, status, created_at, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)`,
-        )
+      db.prepare(
+        `INSERT OR IGNORE INTO slots (
+          id, slot_date, slot_key, slot_label, slot_time, status, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)`,
+      )
         .bind(`${slotDate}:${slot.key}`, slotDate, slot.key, slot.label, slot.time, now),
     ),
   );
 }
 
-async function getDashboard(db: D1Database, now: Date, timezone: string) {
-  const local = getLocalDateTime(now, timezone);
+async function getDayData(db: D1Database, slotDate: string, timezone: string) {
+  const rows = await db.prepare(
+    `SELECT
+      slots.id,
+      slots.slot_date,
+      slots.slot_key,
+      slots.slot_label,
+      slots.slot_time,
+      slots.status,
+      slots.completed_at,
+      users.name AS completed_by_name,
+      slots.last_notified_at
+     FROM slots
+     LEFT JOIN users ON users.id = slots.completed_by_user_id
+     WHERE slots.slot_date = ?1
+     ORDER BY slots.slot_time ASC`,
+  )
+    .bind(slotDate)
+    .all<SlotRow>();
 
-  const [todayRows, overdueRows, recentRows] = await Promise.all([
-    db
-      .prepare(
-        `SELECT
-          slots.id,
-          slots.slot_date,
-          slots.slot_key,
-          slots.slot_label,
-          slots.slot_time,
-          slots.status,
-          slots.completed_at,
-          users.name AS completed_by_name,
-          slots.last_notified_at
-        FROM slots
-        LEFT JOIN users ON users.id = slots.completed_by_user_id
-        WHERE slots.slot_date = ?1
-        ORDER BY slots.slot_time ASC`,
-      )
-      .bind(local.date)
-      .all<SlotRow>(),
-    db
-      .prepare(
-        `SELECT
-          slots.id,
-          slots.slot_date,
-          slots.slot_key,
-          slots.slot_label,
-          slots.slot_time,
-          slots.status,
-          slots.completed_at,
-          users.name AS completed_by_name,
-          slots.last_notified_at
-        FROM slots
-        LEFT JOIN users ON users.id = slots.completed_by_user_id
-        WHERE slots.status = 'pending'
-          AND (slots.slot_date < ?1 OR (slots.slot_date = ?1 AND slots.slot_time < ?2))
-        ORDER BY slots.slot_date DESC, slots.slot_time DESC
-        LIMIT 6`,
-      )
-      .bind(local.date, local.time)
-      .all<SlotRow>(),
-    db
-      .prepare(
-        `SELECT
-          slots.id,
-          slots.slot_date,
-          slots.slot_key,
-          slots.slot_label,
-          slots.slot_time,
-          slots.status,
-          slots.completed_at,
-          users.name AS completed_by_name,
-          slots.last_notified_at
-        FROM slots
-        LEFT JOIN users ON users.id = slots.completed_by_user_id
-        ORDER BY slots.slot_date DESC, slots.slot_time DESC
-        LIMIT 12`,
-      )
-      .all<SlotRow>(),
-  ]);
-
+  const slots = rows.results.map((row) => mapSlotRow(row, timezone));
   return {
-    today: todayRows.results.map(mapSlotRow),
-    overdue: overdueRows.results.map(mapSlotRow),
-    recent: recentRows.results.map(mapSlotRow),
+    date: slotDate,
+    slots,
+    stats: summarizeDay(slots),
   };
 }
 
-function mapSlotRow(row: SlotRow) {
+async function getOverdueSlots(db: D1Database, now: Date, timezone: string) {
+  const local = getLocalDateTime(now, timezone);
+  const rows = await db.prepare(
+    `SELECT
+      slots.id,
+      slots.slot_date,
+      slots.slot_key,
+      slots.slot_label,
+      slots.slot_time,
+      slots.status,
+      slots.completed_at,
+      users.name AS completed_by_name,
+      slots.last_notified_at
+     FROM slots
+     LEFT JOIN users ON users.id = slots.completed_by_user_id
+     WHERE slots.status = 'pending'
+       AND slots.slot_date >= ?1
+       AND (slots.slot_date < ?2 OR (slots.slot_date = ?2 AND slots.slot_time < ?3))
+     ORDER BY slots.slot_date DESC, slots.slot_time DESC
+     LIMIT 12`,
+  )
+    .bind(TRACKING_START_DATE, local.date, local.time)
+    .all<SlotRow>();
+
+  return rows.results.map((row) => mapSlotRow(row, timezone));
+}
+
+function mapSlotRow(row: SlotRow, timezone: string) {
+  const latenessMinutes = calculateLatenessMinutes(row, timezone);
   return {
     id: row.id,
     date: row.slot_date,
@@ -578,7 +650,39 @@ function mapSlotRow(row: SlotRow) {
     completedAt: row.completed_at,
     completedByName: row.completed_by_name,
     lastNotifiedAt: row.last_notified_at,
+    latenessMinutes,
   };
+}
+
+function summarizeDay(
+  slots: Array<{ status: 'pending' | 'completed'; latenessMinutes: number | null }>,
+): DayStats {
+  const completed = slots.filter((slot) => slot.status === 'completed' && slot.latenessMinutes !== null);
+  const deltas = completed.map((slot) => slot.latenessMinutes as number);
+
+  return {
+    completedCount: slots.filter((slot) => slot.status === 'completed').length,
+    pendingCount: slots.filter((slot) => slot.status === 'pending').length,
+    averageLatenessMinutes: deltas.length ? Math.round(deltas.reduce((sum, value) => sum + value, 0) / deltas.length) : null,
+    maxLatenessMinutes: deltas.length ? Math.max(...deltas) : null,
+    minLatenessMinutes: deltas.length ? Math.min(...deltas) : null,
+  };
+}
+
+function calculateLatenessMinutes(row: SlotRow, timezone: string): number | null {
+  if (row.status !== 'completed' || !row.completed_at) return null;
+
+  const actual = getLocalDateTime(new Date(row.completed_at), timezone);
+  const scheduledDayIndex = dayIndex(row.slot_date);
+  const actualDayIndex = dayIndex(actual.date);
+  const dayDiff = actualDayIndex - scheduledDayIndex;
+
+  return dayDiff * 1440 + parseTimeMinutes(actual.time) - parseTimeMinutes(row.slot_time);
+}
+
+async function listUsers(db: D1Database) {
+  const rows = await db.prepare('SELECT id, name FROM users ORDER BY name ASC').all<UserRow>();
+  return rows.results.map((user) => ({ id: user.id, name: user.name }));
 }
 
 async function readSession(request: Request, env: Env): Promise<SessionPayload | null> {
@@ -597,6 +701,12 @@ async function readSession(request: Request, env: Env): Promise<SessionPayload |
   if (!payload) return null;
   if (payload.exp <= Math.floor(Date.now() / 1000)) return null;
   return payload;
+}
+
+function isPersonSession(
+  session: SessionPayload | null,
+): session is SessionPayload & { uid: string; name: string } {
+  return !!session?.uid && !!session?.name;
 }
 
 async function createSessionToken(payload: SessionPayload, env: Env): Promise<string> {
@@ -623,13 +733,6 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
 function parseCookies(header: string | null): Record<string, string> {
   const output: Record<string, string> = {};
   if (!header) return output;
@@ -654,12 +757,8 @@ function json(data: JsonValue | Record<string, unknown>, status = 200): Response
   });
 }
 
-function normalizeUsername(value: string): string {
-  return String(value).trim().toLowerCase();
-}
-
 function normalizeIdentity(value: string): string {
-  return normalizeUsername(value);
+  return String(value).trim().toLowerCase();
 }
 
 function normalizeSubscription(
@@ -694,6 +793,13 @@ function shouldSendReminder(lastSentAt: string | null, now: Date, intervalMs: nu
   return now.getTime() - last >= intervalMs;
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function getLocalDateTime(date: Date, timezone: string): { date: string; time: string } {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
@@ -721,6 +827,20 @@ function getLocalDateTime(date: Date, timezone: string): { date: string; time: s
 function getOffsetLocalDate(date: Date, timezone: string, offsetDays: number): string {
   const shifted = new Date(date.getTime() + offsetDays * 24 * 60 * 60 * 1000);
   return getLocalDateTime(shifted, timezone).date;
+}
+
+function parseTimeMinutes(value: string): number {
+  const [hour, minute] = value.split(':').map(Number);
+  return hour * 60 + minute;
+}
+
+function dayIndex(value: string): number {
+  const [year, month, day] = value.split('-').map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000);
+}
+
+function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function encodeBase64Url(value: string): string {

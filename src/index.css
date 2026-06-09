@@ -134,9 +134,20 @@ h2 {
 }
 
 .slots,
-.activity {
+.activity,
+.stat-grid {
   display: grid;
   gap: 0.75rem;
+}
+
+.date-controls,
+.inline-actions {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.inline-actions {
+  grid-template-columns: 1fr 1fr;
 }
 
 .slot {
@@ -168,6 +179,12 @@ h2 {
   color: #4c3528;
 }
 
+.delta-line {
+  margin-top: 0.45rem;
+  color: #7c604f;
+  font-size: 0.92rem;
+}
+
 .activity-row {
   display: flex;
   justify-content: space-between;
@@ -194,6 +211,29 @@ h2 {
 
 .status.wait {
   color: #9a4b32;
+}
+
+.stat-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 1rem;
+}
+
+.stat-card {
+  border: 1px solid rgba(111, 47, 29, 0.1);
+  border-radius: 18px;
+  padding: 0.9rem;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.stat-card span {
+  display: block;
+  color: #7c604f;
+  font-size: 0.84rem;
+  margin-bottom: 0.25rem;
+}
+
+.stat-card strong {
+  font-size: 1.02rem;
 }
 
 .login-form {
@@ -240,6 +280,11 @@ select:focus {
   color: #532515;
 }
 
+.small-button {
+  padding: 0.55rem 0.85rem;
+  font-size: 0.88rem;
+}
+
 .primary:disabled,
 .ghost:disabled {
   opacity: 0.62;
@@ -284,6 +329,10 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
+  .stat-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .hero-row,
   .activity-row,
   .slot-title {
@@ -293,5 +342,9 @@ select:focus {
 
   .status {
     text-align: left;
+  }
+
+  .inline-actions {
+    grid-template-columns: 1fr;
   }
 }

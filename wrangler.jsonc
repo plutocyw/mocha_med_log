@@ -25,10 +25,10 @@
   ],
   "vars": {
     "TIMEZONE": "America/Los_Angeles",
-    "REMINDER_INTERVAL_MINUTES": "30"
+    "REMINDER_INTERVAL_MINUTES": "5"
   },
   "triggers": {
-    "crons": ["*/10 * * * *"]
+    "crons": ["*/5 * * * *"]
   },
   "observability": {
     "enabled": true
