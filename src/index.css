@@ -118,6 +118,30 @@ h2 {
   padding: 1.1rem;
 }
 
+.app-bar {
+  padding: 0.95rem 1rem;
+}
+
+.app-bar-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.app-bar-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: clamp(1.3rem, 4.5vw, 2rem);
+  line-height: 1;
+  color: #3a1d12;
+}
+
+.app-bar-subtitle {
+  margin-top: 0.45rem;
+  color: #7c604f;
+  font-size: 0.92rem;
+}
+
 .panel-head {
   display: flex;
   justify-content: space-between;
@@ -159,6 +183,10 @@ h2 {
   padding: 0.8rem;
 }
 
+.compact-nav {
+  padding: 0.65rem;
+}
+
 .nav-buttons {
   grid-template-columns: repeat(3, 1fr);
 }
@@ -170,6 +198,22 @@ h2 {
   border-radius: 16px;
   padding: 0.85rem 1rem;
   font-weight: 600;
+}
+
+.compact-home-grid {
+  grid-template-columns: 1.15fr 1fr;
+}
+
+.compact-copy {
+  font-size: 0.9rem;
+}
+
+.compact-button {
+  padding: 0.75rem 1rem;
+}
+
+.compact-day-panel {
+  padding-top: 0.95rem;
 }
 
 .nav-button.active {
@@ -298,11 +342,16 @@ h2 {
   margin-bottom: 1rem;
 }
 
+.compact-stats {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .stat-card {
   border: 1px solid rgba(111, 47, 29, 0.1);
   border-radius: 18px;
-  padding: 0.9rem;
+  padding: 0.75rem;
   background: rgba(255, 255, 255, 0.54);
+  min-height: 110px;
 }
 
 .stat-card span {
@@ -443,6 +492,10 @@ select:focus {
     grid-template-columns: 1fr 1fr;
   }
 
+  .compact-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .nav-buttons,
   .range-grid {
     grid-template-columns: 1fr;
@@ -457,6 +510,18 @@ select:focus {
   .slot-title {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .app-bar-top {
+    align-items: stretch;
+  }
+
+  .app-bar-title {
+    font-size: 1.35rem;
+  }
+
+  .compact-home-grid {
+    grid-template-columns: 1fr;
   }
 
   .status {

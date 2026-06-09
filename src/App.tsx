@@ -568,18 +568,22 @@ export default function App() {
 
   return (
     <Shell>
-      <section className="hero">
-        <div className="eyebrow">Mocha Med Log</div>
-        <div className="hero-row">
+      <section className="panel app-bar">
+        <div className="app-bar-top">
           <div>
-            <h1>{view === 'home' && nextPending ? `${nextPending.label} still needs to be logged.` : 'Mocha medication tracker'}</h1>
-            <p>Signed in as <strong>{bootstrap.me.name}</strong>. Navigate between daily logging, stats, and future schedule changes.</p>
+            <div className="eyebrow">Mocha Med Log</div>
+            <div className="app-bar-title">
+              {view === 'home' && nextPending ? `${nextPending.label} pending` : view[0].toUpperCase() + view.slice(1)}
+            </div>
           </div>
-          <button className="ghost" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>Sign out</button>
+          <button className="ghost small-button" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>Sign out</button>
+        </div>
+        <div className="app-bar-subtitle">
+          Signed in as <strong>{bootstrap.me.name}</strong>
         </div>
       </section>
 
-      <nav className="panel nav-panel">
+      <nav className="panel nav-panel compact-nav">
         <div className="nav-buttons">
           <button className={view === 'home' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('home')}>Home</button>
           <button className={view === 'stats' ? 'nav-button active' : 'nav-button'} type="button" onClick={() => setView('stats')}>Stats</button>
@@ -589,7 +593,7 @@ export default function App() {
 
       {view === 'home' ? (
         <>
-          <section className="grid">
+          <section className="grid compact-home-grid">
             <article className="panel">
               <div className="panel-head">
                 <h2>Today</h2>
@@ -597,28 +601,27 @@ export default function App() {
               </div>
               <div className="date-controls">
                 <input type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
-                <p className="small">Home always opens on today. Use the picker to inspect older records.</p>
               </div>
             </article>
             <article className="panel">
               <div className="panel-head">
                 <h2>Notifications</h2>
-                <span>{pushState.subscribed ? 'Active on this device' : 'Needs setup'}</span>
+                <span>{pushState.subscribed ? 'Active' : 'Setup'}</span>
               </div>
-              <p className="small">{pushState.message}</p>
-              <button className="primary" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
+              <p className="small compact-copy">{pushState.message}</p>
+              <button className="primary compact-button" type="button" onClick={() => void enableNotifications()} disabled={actionBusy === 'notifications' || !pushState.supported}>
                 {pushState.subscribed ? 'Refresh device subscription' : 'Enable notifications'}
               </button>
             </article>
           </section>
 
           {day ? (
-            <section className="panel">
+            <section className="panel compact-day-panel">
               <div className="panel-head">
                 <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
                 <span>{day.stats.completedCount} of {day.slots.length} logged</span>
               </div>
-              <div className="stat-grid">
+              <div className="stat-grid compact-stats">
                 <StatCard label="Completed" value={String(day.stats.completedCount)} />
                 <StatCard label="Pending" value={String(day.stats.pendingCount)} />
                 <StatCard label="Skipped" value={String(day.stats.skippedCount)} />
