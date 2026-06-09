@@ -31,7 +31,7 @@ The app navigation is split into:
 - React + Vite PWA frontend
 - Cloudflare Worker for API + static asset hosting
 - Cloudflare D1 for users, medication slots, and push subscriptions
-- Web Push via `@pushforge/builder`, which runs in Workers
+- Web Push via `@block65/webcrypto-web-push`, which runs in Workers
 
 ## Setup
 
@@ -57,17 +57,26 @@ The app navigation is split into:
    npm run db:migrate:remote
    ```
 
-4. Generate VAPID keys:
+4. Generate VAPID keys (raw base64url format):
 
    ```bash
-   npx @pushforge/builder vapid
+   node --input-type=module << 'EOF'
+   import { webcrypto } from 'node:crypto';
+   const kp = await webcrypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+   const pub = await webcrypto.subtle.exportKey('jwk', kp.publicKey);
+   const priv = await webcrypto.subtle.exportKey('jwk', kp.privateKey);
+   const b64 = s => Buffer.from(s.replace(/-/g,'+').replace(/_/g,'/')+'=='.slice(0,(4-s.length%4)%4),'base64');
+   const b64u = b => b.toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+   console.log('VAPID_PUBLIC_KEY=' + b64u(Buffer.concat([Buffer.from([0x04]), b64(pub.x), b64(pub.y)])));
+   console.log('VAPID_PRIVATE_KEY=' + b64u(b64(priv.d)));
+   EOF
    ```
 
    Save:
 
-   - `publicKey` as `VAPID_PUBLIC_KEY`
-   - the full private JWK JSON object as `VAPID_PRIVATE_KEY`
-   - a contact string like `mailto:you@example.com` as `VAPID_SUBJECT`
+   - `VAPID_PUBLIC_KEY` — the uncompressed public key (starts with `BN...`)
+   - `VAPID_PRIVATE_KEY` — the raw private key (32-byte base64url)
+   - `VAPID_SUBJECT` — a contact string like `mailto:you@example.com`
 
 5. Set Worker secrets:
 
