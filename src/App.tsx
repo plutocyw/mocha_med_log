@@ -476,13 +476,12 @@ export default function App() {
         return;
       }
       const registration = await navigator.serviceWorker.ready;
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: base64UrlToArrayBuffer(bootstrap.vapidPublicKey),
-        });
-      }
+      const existing = await registration.pushManager.getSubscription();
+      if (existing) await existing.unsubscribe();
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToArrayBuffer(bootstrap.vapidPublicKey),
+      });
       await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
