@@ -714,7 +714,6 @@ async function sendPush(
     );
     const response = await fetch(subscription.endpoint, init as unknown as RequestInit);
     const responseText = await response.text().catch(() => '');
-    console.log(`Push response: ${response.status} ${response.statusText} | body: ${responseText} | endpoint: ${subscription.endpoint.slice(0, 60)}`);
 
     if (response.ok) {
       await env.DB.prepare(

@@ -504,6 +504,14 @@ export default function App() {
     const permission = Notification.permission;
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const existingKey = subscription.options.applicationServerKey;
+      const expectedKey = base64UrlToArrayBuffer(vapidPublicKey);
+      if (!existingKey || !uint8ArraysEqual(new Uint8Array(existingKey), new Uint8Array(expectedKey))) {
+        await subscription.unsubscribe().catch(() => undefined);
+        subscription = null;
+      }
+    }
     if (permission === 'granted' && !subscription) {
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
@@ -536,7 +544,7 @@ export default function App() {
     void vapidPublicKey;
   }
 
-  if (loading && !bootstrap && authState.stage === 'password') {
+  if (loading && !bootstrap) {
     return <Shell><div className="panel muted">Loading…</div></Shell>;
   }
 
@@ -957,6 +965,12 @@ function makeSettingsDrafts(settings: SettingsData): SettingsSlotDraft[] {
     skipped: slot.skipped,
     reason: slot.reason ?? '',
   }));
+}
+
+function uint8ArraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function base64UrlToArrayBuffer(base64Url: string): ArrayBuffer {
