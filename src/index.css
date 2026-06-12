@@ -198,14 +198,62 @@ h2 {
   display: flex;
   justify-content: space-between;
   gap: 0.85rem;
-  align-items: start;
-  margin-bottom: 0.85rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
 }
 
 .home-day-actions {
   display: flex;
   gap: 0.55rem;
   align-items: center;
+  flex-shrink: 0;
+}
+
+.home-day-actions input {
+  padding: 0.45rem 0.65rem;
+  font-size: 0.88rem;
+  width: auto;
+}
+
+.day-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.9rem;
+}
+
+.stat-pill {
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.stat-pill-done {
+  background: rgba(30, 106, 60, 0.12);
+  color: #1e6a3c;
+}
+
+.stat-pill-pending {
+  background: rgba(154, 75, 50, 0.14);
+  color: #9a4b32;
+}
+
+.stat-pill-skipped {
+  background: rgba(93, 82, 64, 0.1);
+  color: #6b5a43;
+}
+
+.stat-pill-lateness {
+  background: rgba(111, 47, 29, 0.1);
+  color: #7c4a2e;
+}
+
+.perday-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  justify-content: flex-end;
 }
 
 .range-grid {
@@ -269,6 +317,96 @@ h2 {
 
 .slot.skipped {
   background: linear-gradient(135deg, rgba(241, 239, 234, 1), rgba(229, 226, 216, 0.88));
+}
+
+.checklist-slot {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.slot-check-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  align-items: center;
+  padding: 0.85rem;
+}
+
+.slot-toggle {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr);
+  gap: 0.85rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.slot-toggle:focus-visible,
+.slot-status-button:focus-visible {
+  outline: 3px solid rgba(111, 47, 29, 0.24);
+  outline-offset: 3px;
+}
+
+.slot-time {
+  color: #5c2e1e;
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 1.38rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.slot-check-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.18rem;
+}
+
+.slot-check-copy strong {
+  color: #3a1d12;
+  font-size: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot-check-copy span {
+  color: #7c604f;
+  font-size: 0.86rem;
+}
+
+.slot-check-action {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.slot-complete-button {
+  padding: 0.65rem 0.9rem;
+  white-space: nowrap;
+}
+
+.slot-status-button {
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.slot-details {
+  border-top: 1px solid rgba(111, 47, 29, 0.09);
+  padding: 0.72rem 0.85rem 0.85rem 6.9rem;
+  color: #4c3528;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.slot-details p {
+  font-size: 0.92rem;
 }
 
 .slot-title {
@@ -427,6 +565,26 @@ select:focus {
   margin-bottom: 0;
 }
 
+.settings-step {
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(111, 47, 29, 0.08);
+  display: grid;
+  gap: 0.7rem;
+}
+
+.settings-step-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8d5a46;
+}
+
+.settings-step-note {
+  color: #8d5a46;
+  font-size: 0.88rem;
+}
+
 .primary:disabled,
 .ghost:disabled {
   opacity: 0.62;
@@ -487,9 +645,13 @@ select:focus {
   background: rgba(255, 255, 255, 0.72);
   color: #5c2e1e;
   border-radius: 14px;
-  padding: 0.65rem 0.5rem;
+  padding: 0.7rem 0.5rem 0.55rem;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
 }
 
 .bottom-nav-button.active {
@@ -553,10 +715,28 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
-  .home-day-top,
-  .home-day-actions {
-    flex-direction: column;
-    align-items: stretch;
+  .slot-check-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.6rem;
+    padding: 0.75rem;
+  }
+
+  .slot-toggle {
+    grid-template-columns: 4.4rem minmax(0, 1fr);
+    gap: 0.6rem;
+  }
+
+  .slot-time {
+    font-size: 1.2rem;
+  }
+
+  .slot-complete-button {
+    padding: 0.58rem 0.72rem;
+    font-size: 0.84rem;
+  }
+
+  .slot-details {
+    padding: 0.72rem 0.75rem 0.8rem;
   }
 
   .status {

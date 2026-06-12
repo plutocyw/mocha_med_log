@@ -618,21 +618,16 @@ export default function App() {
           {day ? (
             <section className="panel compact-day-panel">
               <div className="home-day-top">
-                <div>
-                  <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
-                  <div className="small">{day.date === bootstrap.todayDate ? 'Home opens on today by default.' : 'Viewing past record.'}</div>
-                </div>
+                <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
                 <div className="home-day-actions">
                   <input type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
                   <button className="ghost small-button" type="button" onClick={() => void handleDayChange(bootstrap.todayDate)} disabled={selectedDate === bootstrap.todayDate || actionBusy === 'home-date'}>Today</button>
                 </div>
               </div>
-              <div className="compact-metric-strip">
-                <StatCard label="Completed" value={String(day.stats.completedCount)} />
-                <StatCard label="Pending" value={String(day.stats.pendingCount)} />
-                <StatCard label="Skipped" value={String(day.stats.skippedCount)} />
-                <StatCard label="Average delta" value={formatDelta(day.stats.averageLatenessMinutes)} />
-                <StatCard label="Worst delta" value={formatDelta(day.stats.maxLatenessMinutes)} />
+              <div className="day-stats-row">
+                <span className="stat-pill stat-pill-done">{day.stats.completedCount} done</span>
+                <span className="stat-pill stat-pill-pending">{day.stats.pendingCount} pending</span>
+                <span className="stat-pill stat-pill-skipped">{day.stats.skippedCount} skipped</span>
               </div>
               <div className="slots">
                 {day.slots.map((slot) => (
@@ -682,12 +677,18 @@ export default function App() {
               <h2>Summary</h2>
               <span>{stats.startDate} to {stats.endDate}</span>
             </div>
-            <div className="stat-grid">
-              <StatCard label="Completed" value={String(stats.summary.totalCompleted)} />
-              <StatCard label="Skipped" value={String(stats.summary.totalSkipped)} />
-              <StatCard label="Average delta" value={formatDelta(stats.summary.averageLatenessMinutes)} />
-              <StatCard label="Best delta" value={formatDelta(stats.summary.bestLatenessMinutes)} />
-              <StatCard label="Worst delta" value={formatDelta(stats.summary.worstLatenessMinutes)} />
+            <div className="day-stats-row">
+              <span className="stat-pill stat-pill-done">{stats.summary.totalCompleted} completed</span>
+              <span className="stat-pill stat-pill-skipped">{stats.summary.totalSkipped} skipped</span>
+              {stats.summary.averageLatenessMinutes !== null && (
+                <span className="stat-pill stat-pill-lateness">avg {formatDeltaShort(stats.summary.averageLatenessMinutes)}</span>
+              )}
+              {stats.summary.bestLatenessMinutes !== null && (
+                <span className="stat-pill stat-pill-lateness">best {formatDeltaShort(stats.summary.bestLatenessMinutes)}</span>
+              )}
+              {stats.summary.worstLatenessMinutes !== null && (
+                <span className="stat-pill stat-pill-lateness">worst {formatDeltaShort(stats.summary.worstLatenessMinutes)}</span>
+              )}
             </div>
           </section>
 
@@ -732,8 +733,10 @@ export default function App() {
               {stats.perDay.map((point) => (
                 <div className="activity-row" key={point.date}>
                   <div><strong>{point.date}</strong></div>
-                  <div className="status">
-                    {point.completedCount} done, {point.skippedCount} skipped, average {formatDelta(point.averageLatenessMinutes)}
+                  <div className="perday-pills">
+                    <span className="stat-pill stat-pill-done">{point.completedCount} done</span>
+                    {point.skippedCount > 0 && <span className="stat-pill stat-pill-skipped">{point.skippedCount} skipped</span>}
+                    {point.averageLatenessMinutes !== null && <span className="stat-pill stat-pill-lateness">avg {formatDeltaShort(point.averageLatenessMinutes)}</span>}
                   </div>
                 </div>
               ))}
@@ -761,28 +764,32 @@ export default function App() {
           </section>
 
           <section className="panel">
-            <div className="panel-head">
-              <h2>Batch Settings</h2>
-              <button className="primary small-button" type="button" onClick={() => void handleBatchSave()} disabled={actionBusy === 'settings-batch'}>
-                {actionBusy === 'settings-batch' ? 'Saving…' : 'Apply to Range'}
-              </button>
+            <div className="panel-head compact-head">
+              <h2>Date Overrides</h2>
             </div>
-            <div className="range-grid">
+            <div className="settings-step">
+              <div className="settings-step-label">1 · Preview a date</div>
               <label className="settings-field">
-                Start
-                <input type="date" value={settingsRange.startDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, startDate: event.target.value }))} />
-              </label>
-              <label className="settings-field">
-                End
-                <input type="date" value={settingsRange.endDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, endDate: event.target.value }))} />
-              </label>
-            </div>
-            <div className="date-controls">
-              <label className="settings-field">
-                Preview date
+                Date
                 <input type="date" value={settings.date} min={settings.minDate} onChange={(event) => void handleSettingsDateChange(event.target.value)} />
               </label>
-              <p className="small">Edit the slot values below, then apply them across the selected date range.</p>
+              <p className="small settings-step-note">Changing this resets any edits you've made to the slot cards below.</p>
+            </div>
+            <div className="settings-step">
+              <div className="settings-step-label">2 · Apply to a date range</div>
+              <div className="range-grid">
+                <label className="settings-field">
+                  Start
+                  <input type="date" value={settingsRange.startDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, startDate: event.target.value }))} />
+                </label>
+                <label className="settings-field">
+                  End
+                  <input type="date" value={settingsRange.endDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, endDate: event.target.value }))} />
+                </label>
+              </div>
+              <button className="primary" type="button" onClick={() => void handleBatchSave()} disabled={actionBusy === 'settings-batch'}>
+                {actionBusy === 'settings-batch' ? 'Saving…' : 'Apply to Range'}
+              </button>
             </div>
           </section>
 
@@ -858,12 +865,15 @@ export default function App() {
 
       <nav className="bottom-nav">
         <button className={view === 'home' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('home')}>
+          <HomeIcon />
           <span>Home</span>
         </button>
         <button className={view === 'stats' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('stats')}>
+          <StatsIcon />
           <span>Stats</span>
         </button>
         <button className={view === 'settings' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('settings')}>
+          <SettingsIcon />
           <span>Settings</span>
         </button>
       </nav>
@@ -889,30 +899,52 @@ function SlotCard({
   busy: boolean;
   onComplete: () => void;
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsId = `slot-details-${slot.id}`;
+  const statusLabel =
+    slot.status === 'completed'
+      ? 'Logged'
+      : slot.status === 'skipped'
+        ? 'Skipped'
+        : 'Waiting';
+
+  function toggleDetails() {
+    setDetailsOpen((current) => !current);
+  }
+
   return (
-    <div className={`slot ${slot.status}`}>
-      <div>
-        <div className="slot-title">
-          <strong>{slot.label}</strong>
-          <span>{slot.time}</span>
+    <article className={`slot checklist-slot ${slot.status} ${detailsOpen ? 'expanded' : ''}`}>
+      <div className="slot-check-row">
+        <button className="slot-toggle" type="button" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>
+          <div className="slot-time">{slot.time}</div>
+          <div className="slot-check-copy">
+            <strong>{slot.label}</strong>
+            <span>{statusLabel} · {detailsOpen ? 'Hide details' : 'Tap for details'}</span>
+          </div>
+        </button>
+        <div className="slot-check-action">
+          {slot.status === 'pending' ? (
+            <button className="primary slot-complete-button" type="button" disabled={busy} onClick={onComplete}>{busy ? 'Saving…' : 'Mark complete'}</button>
+          ) : slot.status === 'skipped' ? (
+            <button className="pill skipped slot-status-button" type="button" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>Skipped</button>
+          ) : (
+            <button className="pill done slot-status-button" type="button" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>Complete</button>
+          )}
         </div>
-        <p>
-          {slot.status === 'completed'
-            ? `Completed by ${slot.completedByName ?? 'someone'} at ${formatTimestamp(slot.completedAt)}`
-            : slot.status === 'skipped'
-              ? 'Skipped for this date. No reminder will fire for this slot.'
-              : 'Waiting for either person to log this dose.'}
-        </p>
-        {slot.status === 'completed' ? <p className="delta-line">Difference from schedule: {formatDelta(slot.latenessMinutes)}</p> : null}
       </div>
-      {slot.status === 'pending' ? (
-        <button className="primary" type="button" disabled={busy} onClick={onComplete}>{busy ? 'Saving…' : 'Mark complete'}</button>
-      ) : slot.status === 'skipped' ? (
-        <div className="pill skipped">Skipped</div>
-      ) : (
-        <div className="pill done">Complete</div>
-      )}
-    </div>
+      {detailsOpen ? (
+        <div className="slot-details" id={detailsId}>
+          <p>
+            {slot.status === 'completed'
+              ? `Marked complete by ${slot.completedByName ?? 'someone'} at ${formatTimestamp(slot.completedAt)}.`
+              : slot.status === 'skipped'
+                ? 'Skipped for this date. No reminder will fire for this slot.'
+                : 'Waiting for either person to log this dose.'}
+          </p>
+          {slot.status === 'completed' ? <p>Difference from schedule: {formatDelta(slot.latenessMinutes)}</p> : null}
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -992,11 +1024,44 @@ function formatTimestamp(value: string | null): string {
   }).format(date);
 }
 
+function formatDeltaShort(value: number): string {
+  if (value === 0) return 'on time';
+  if (value > 0) return `+${value}m`;
+  return `${value}m`;
+}
+
 function formatDelta(value: number | null): string {
   if (value === null) return 'Not logged';
   if (value === 0) return 'On time';
   if (value > 0) return `${value} min late`;
   return `${Math.abs(value)} min early`;
+}
+
+function HomeIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10 2.5L2 9V18h5.5v-5h5v5H18V9L10 2.5z"/>
+    </svg>
+  );
+}
+
+function StatsIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <rect x="2" y="11" width="4" height="7" rx="1"/>
+      <rect x="8" y="7" width="4" height="11" rx="1"/>
+      <rect x="14" y="3" width="4" height="15" rx="1"/>
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <circle cx="10" cy="10" r="2.8"/>
+      <path d="M17.2 11.2l1.4-1.1-1.4-2.4-1.8.7a6.6 6.6 0 00-1.8-1l-.3-1.9H10l-.3 1.9a6.6 6.6 0 00-1.8 1l-1.8-.7-1.4 2.4 1.4 1.1a6.5 6.5 0 000 2.4l-1.4 1.1 1.4 2.4 1.8-.7a6.6 6.6 0 001.8 1l.3 1.9h3.3l.3-1.9a6.6 6.6 0 001.8-1l1.8.7 1.4-2.4-1.4-1.1a6.5 6.5 0 000-2.4z"/>
+    </svg>
+  );
 }
 
 function isStandaloneMode(): boolean {
