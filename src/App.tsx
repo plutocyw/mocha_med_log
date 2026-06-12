@@ -901,12 +901,6 @@ function SlotCard({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsId = `slot-details-${slot.id}`;
-  const statusLabel =
-    slot.status === 'completed'
-      ? 'Logged'
-      : slot.status === 'skipped'
-        ? 'Skipped'
-        : 'Waiting';
 
   function toggleDetails() {
     setDetailsOpen((current) => !current);
@@ -915,12 +909,9 @@ function SlotCard({
   return (
     <article className={`slot checklist-slot ${slot.status} ${detailsOpen ? 'expanded' : ''}`}>
       <div className="slot-check-row">
-        <button className="slot-toggle" type="button" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>
-          <div className="slot-time">{slot.time}</div>
-          <div className="slot-check-copy">
-            <strong>{slot.label}</strong>
-            <span>{statusLabel} · {detailsOpen ? 'Hide details' : 'Tap for details'}</span>
-          </div>
+        <button className="slot-toggle" type="button" aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${slot.time}`} aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>
+          <span className="slot-disclosure" aria-hidden="true" />
+          <span className="slot-time">{slot.time}</span>
         </button>
         <div className="slot-check-action">
           {slot.status === 'pending' ? (
@@ -934,18 +925,19 @@ function SlotCard({
       </div>
       {detailsOpen ? (
         <div className="slot-details" id={detailsId}>
-          <p>
-            {slot.status === 'completed'
-              ? `Marked complete by ${slot.completedByName ?? 'someone'} at ${formatTimestamp(slot.completedAt)}.`
-              : slot.status === 'skipped'
-                ? 'Skipped for this date. No reminder will fire for this slot.'
-                : 'Waiting for either person to log this dose.'}
-          </p>
-          {slot.status === 'completed' ? <p>Difference from schedule: {formatDelta(slot.latenessMinutes)}</p> : null}
+          <p>{formatSlotDetail(slot)}</p>
         </div>
       ) : null}
     </article>
   );
+}
+
+function formatSlotDetail(slot: Slot): string {
+  if (slot.status === 'completed') {
+    return `${slot.completedByName ?? 'Someone'} · ${formatTimestamp(slot.completedAt)} · ${formatDelta(slot.latenessMinutes)}`;
+  }
+  if (slot.status === 'skipped') return 'Skipped for this date.';
+  return 'Not logged yet.';
 }
 
 function StatCard({ label, value }: { label: string; value: string }) {

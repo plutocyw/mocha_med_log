@@ -327,9 +327,10 @@ h2 {
 
 .slot-check-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto auto;
   gap: 0.85rem;
   align-items: center;
+  justify-content: space-between;
   padding: 0.85rem;
 }
 
@@ -339,17 +340,29 @@ h2 {
   color: inherit;
   padding: 0;
   text-align: left;
-  display: grid;
-  grid-template-columns: 5.2rem minmax(0, 1fr);
-  gap: 0.85rem;
+  display: inline-flex;
+  gap: 0.45rem;
   align-items: center;
-  min-width: 0;
+  min-width: 5.6rem;
 }
 
 .slot-toggle:focus-visible,
 .slot-status-button:focus-visible {
   outline: 3px solid rgba(111, 47, 29, 0.24);
   outline-offset: 3px;
+}
+
+.slot-disclosure {
+  width: 0;
+  height: 0;
+  border-top: 0.32rem solid transparent;
+  border-bottom: 0.32rem solid transparent;
+  border-left: 0.46rem solid #8d5a46;
+  transition: transform 120ms ease;
+}
+
+.checklist-slot.expanded .slot-disclosure {
+  transform: rotate(90deg);
 }
 
 .slot-time {
@@ -359,25 +372,6 @@ h2 {
   font-weight: 700;
   line-height: 1;
   white-space: nowrap;
-}
-
-.slot-check-copy {
-  min-width: 0;
-  display: grid;
-  gap: 0.18rem;
-}
-
-.slot-check-copy strong {
-  color: #3a1d12;
-  font-size: 1rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.slot-check-copy span {
-  color: #7c604f;
-  font-size: 0.86rem;
 }
 
 .slot-check-action {
@@ -399,7 +393,7 @@ h2 {
 
 .slot-details {
   border-top: 1px solid rgba(111, 47, 29, 0.09);
-  padding: 0.72rem 0.85rem 0.85rem 6.9rem;
+  padding: 0.72rem 0.85rem 0.85rem 2rem;
   color: #4c3528;
   display: grid;
   gap: 0.35rem;
@@ -716,14 +710,12 @@ select:focus {
   }
 
   .slot-check-row {
-    grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.6rem;
     padding: 0.75rem;
   }
 
   .slot-toggle {
-    grid-template-columns: 4.4rem minmax(0, 1fr);
-    gap: 0.6rem;
+    min-width: 4.9rem;
   }
 
   .slot-time {
