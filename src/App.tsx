@@ -603,7 +603,7 @@ export default function App() {
           <div>
             <div className="eyebrow">Mocha Med Log</div>
             <div className="app-bar-title">
-              {view === 'home' && nextPending ? `${nextPending.label} pending` : view[0].toUpperCase() + view.slice(1)}
+              {view === 'home' && nextPending ? `${nextPending.label} next up` : view[0].toUpperCase() + view.slice(1)}
             </div>
           </div>
           <button className="ghost small-button" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>Sign out</button>
@@ -617,12 +617,8 @@ export default function App() {
         <>
           {day ? (
             <section className="panel compact-day-panel">
-              <div className="home-day-top">
-                <h2>{day.date === bootstrap.todayDate ? 'Today' : day.date}</h2>
-                <div className="home-day-actions">
-                  <input type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
-                  <button className="ghost small-button" type="button" onClick={() => void handleDayChange(bootstrap.todayDate)} disabled={selectedDate === bootstrap.todayDate || actionBusy === 'home-date'}>Today</button>
-                </div>
+              <div className="home-date-row">
+                <input aria-label="Select date" type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
               </div>
               <div className="day-stats-row">
                 <span className="stat-pill stat-pill-done">{day.stats.completedCount} done</span>
