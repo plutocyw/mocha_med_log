@@ -10,6 +10,8 @@ interface Env {
   VAPID_SUBJECT: string;
   TIMEZONE?: string;
   REMINDER_INTERVAL_MINUTES?: string;
+  // Local testing only (.dev.vars). Never set in production.
+  DEV_AUTH_BYPASS?: string;
 }
 
 type JsonValue =
@@ -187,6 +189,10 @@ async function authState(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
 
   if (!session) {
+    if (isDevAuthBypass(env)) {
+      const users = await listUsers(env.DB);
+      return json({ stage: 'identity', users });
+    }
     return json({ stage: 'password' });
   }
 
@@ -197,12 +203,16 @@ async function authState(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  if (session.unlocked) {
+  if (session.unlocked || isDevAuthBypass(env)) {
     const users = await listUsers(env.DB);
     return json({ stage: 'identity', users });
   }
 
   return json({ stage: 'password' });
+}
+
+function isDevAuthBypass(env: Env): boolean {
+  return env.DEV_AUTH_BYPASS === 'true';
 }
 
 async function unlock(request: Request, env: Env): Promise<Response> {
@@ -236,7 +246,7 @@ async function unlock(request: Request, env: Env): Promise<Response> {
 
 async function login(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
-  if (!session?.unlocked) {
+  if (!session?.unlocked && !isDevAuthBypass(env)) {
     return json({ error: 'Enter the site password first.' }, 401);
   }
 
@@ -699,7 +709,7 @@ async function runReminderSweep(env: Env, now: Date): Promise<void> {
 async function sendPush(
   env: Env,
   subscription: SubscriptionRow,
-  message: { title: string; body: string; tag: string; requireInteraction?: boolean; renotify?: boolean; url?: string },
+  message: { title: string; body: string; tag: string; requireInteraction?: boolean; renotify?: boolean; url?: string; topic?: string; urgency?: 'low' | 'normal' | 'high' },
 ): Promise<boolean> {
   try {
     const webPushSub: WebPushSubscription = {
@@ -707,8 +717,16 @@ async function sendPush(
       keys: { p256dh: subscription.p256dh, auth: subscription.auth },
       expirationTime: null,
     };
+    const { topic, urgency, ...notification } = message;
     const init = await buildPushPayload(
-      { data: JSON.stringify(message), options: { ttl: 5 * 60 } },
+      {
+        data: JSON.stringify(notification),
+        // High urgency tells iOS these are time-critical so it delivers
+        // immediately instead of deferring for battery. A long TTL lets the
+        // push survive brief unreachability, and the per-slot collapse topic
+        // means a reconnecting device gets only the latest reminder.
+        options: { ttl: 60 * 60, urgency: urgency ?? 'high', ...(topic ? { topic } : {}) },
+      },
       webPushSub,
       { subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY },
     );
@@ -743,6 +761,7 @@ async function sendSlotReminder(
     title: 'Mocha medication due',
     body: `${slot.slot_label} dose for ${slot.slot_date} is still waiting to be marked complete.`,
     tag: `slot-${slot.id}`,
+    topic: slot.id.replace(/[^A-Za-z0-9]/g, '').slice(0, 32),
     requireInteraction: true,
     renotify: true,
     url: '/',
@@ -972,7 +991,8 @@ async function getSettingsData(
       dates.slot_date,
       dates.slot_key,
       so.slot_time AS override_time,
-      ss.reason AS skip_reason
+      ss.reason AS skip_reason,
+      ss.slot_key AS skip_key
      FROM (
        SELECT slot_date, slot_key FROM schedule_overrides
        UNION
@@ -986,7 +1006,7 @@ async function getSettingsData(
      ORDER BY dates.slot_date ASC, dates.slot_key ASC`,
   )
     .bind(todayDate)
-    .all<{ slot_date: string; slot_key: string; override_time: string | null; skip_reason: string | null }>();
+    .all<{ slot_date: string; slot_key: string; override_time: string | null; skip_reason: string | null; skip_key: string | null }>();
 
   return {
     date: slotDate,
@@ -1006,7 +1026,7 @@ async function getSettingsData(
       slotKey: row.slot_key,
       label: SLOT_DEFINITIONS.find((slot) => slot.key === row.slot_key)?.label ?? row.slot_key,
       overrideTime: row.override_time,
-      skipped: row.skip_reason !== null,
+      skipped: row.skip_key !== null,
       reason: row.skip_reason,
     })),
   };
@@ -1245,7 +1265,12 @@ function shouldSendReminder(lastSentAt: string | null, now: Date, intervalMs: nu
   if (!lastSentAt) return true;
   const last = Date.parse(lastSentAt);
   if (Number.isNaN(last)) return true;
-  return now.getTime() - last >= intervalMs;
+  // Cron jitter means a run can land a few seconds before the full interval
+  // elapses since the last send. Without slack, every other run is skipped and
+  // the effective cadence doubles. Allow a grace window (capped at half the
+  // interval) so an early-firing cron still counts.
+  const grace = Math.min(90_000, intervalMs / 2);
+  return now.getTime() - last >= intervalMs - grace;
 }
 
 function timingSafeEqual(a: string, b: string): boolean {

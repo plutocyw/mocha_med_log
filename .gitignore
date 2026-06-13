@@ -5,3 +5,4 @@ dist
 wrangler-local.toml
 dev.db
 
+.dev.vars

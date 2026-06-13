@@ -2,6 +2,12 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 
 type View = 'home' | 'stats' | 'settings';
 
+const STATS_PRESETS: Array<{ id: string; label: string; days: number | null }> = [
+  { id: '7d', label: '7 days', days: 7 },
+  { id: '30d', label: '30 days', days: 30 },
+  { id: 'all', label: 'All', days: null },
+];
+
 type User = {
   id: string;
   name: string;
@@ -153,6 +159,8 @@ export default function App() {
   const [settingsRange, setSettingsRange] = useState({ startDate: '', endDate: '' });
   const [stats, setStats] = useState<StatsData | null>(null);
   const [statsRange, setStatsRange] = useState({ startDate: '', endDate: '' });
+  const [statsPreset, setStatsPreset] = useState<string>('all');
+  const [statsCustomOpen, setStatsCustomOpen] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [appError, setAppError] = useState('');
   const [password, setPassword] = useState('');
@@ -366,11 +374,13 @@ export default function App() {
     }
   }
 
-  async function handleStatsRefresh() {
-    if (!statsRange.startDate || !statsRange.endDate) return;
+  async function applyStatsRange(startDate: string, endDate: string, preset: string) {
+    if (!startDate || !endDate) return;
+    setStatsRange({ startDate, endDate });
+    setStatsPreset(preset);
     setActionBusy('stats');
     try {
-      const data = await fetchStats(statsRange.startDate, statsRange.endDate);
+      const data = await fetchStats(startDate, endDate);
       setStats(data);
       setAppError('');
     } catch (error) {
@@ -379,6 +389,14 @@ export default function App() {
     } finally {
       setActionBusy(null);
     }
+  }
+
+  function applyStatsPreset(preset: { id: string; days: number | null }) {
+    if (!bootstrap) return;
+    const end = bootstrap.todayDate;
+    let start = preset.days === null ? bootstrap.startDate : isoMinusDays(end, preset.days - 1);
+    if (start < bootstrap.startDate) start = bootstrap.startDate;
+    void applyStatsRange(start, end, preset.id);
   }
 
   async function handleSettingsDateChange(nextDate: string) {
@@ -652,90 +670,85 @@ export default function App() {
       {view === 'stats' && stats ? (
         <>
           <section className="panel">
-            <div className="panel-head">
-              <h2>Stats Range</h2>
-              <button className="primary small-button" type="button" onClick={() => void handleStatsRefresh()} disabled={actionBusy === 'stats'}>{actionBusy === 'stats' ? 'Loading…' : 'Refresh'}</button>
+            <div className="panel-head compact-head">
+              <h2>Stats</h2>
+              <span>{formatDateRange(stats.startDate, stats.endDate)}</span>
             </div>
-            <div className="range-grid">
-              <label className="settings-field">
-                Start
-                <input type="date" value={statsRange.startDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => setStatsRange((current) => ({ ...current, startDate: event.target.value }))} />
-              </label>
-              <label className="settings-field">
-                End
-                <input type="date" value={statsRange.endDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => setStatsRange((current) => ({ ...current, endDate: event.target.value }))} />
-              </label>
+            <div className="chip-row">
+              {STATS_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={statsPreset === preset.id ? 'chip chip-active' : 'chip'}
+                  disabled={actionBusy === 'stats'}
+                  onClick={() => { setStatsCustomOpen(false); applyStatsPreset(preset); }}
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                className={statsPreset === 'custom' ? 'chip chip-active' : statsCustomOpen ? 'chip chip-open' : 'chip'}
+                onClick={() => setStatsCustomOpen((open) => !open)}
+              >
+                Custom
+              </button>
             </div>
+            {statsCustomOpen ? (
+              <div className="range-grid">
+                <label className="settings-field">
+                  Start
+                  <input type="date" value={statsRange.startDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void applyStatsRange(event.target.value, statsRange.endDate, 'custom')} />
+                </label>
+                <label className="settings-field">
+                  End
+                  <input type="date" value={statsRange.endDate} min={statsRange.startDate || bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void applyStatsRange(statsRange.startDate, event.target.value, 'custom')} />
+                </label>
+              </div>
+            ) : null}
           </section>
 
           <section className="panel">
-            <div className="panel-head">
-              <h2>Summary</h2>
-              <span>{stats.startDate} to {stats.endDate}</span>
-            </div>
+            <div className="panel-head"><h2>Summary</h2></div>
             <div className="day-stats-row">
               <span className="stat-pill stat-pill-done">{stats.summary.totalCompleted} completed</span>
               <span className="stat-pill stat-pill-skipped">{stats.summary.totalSkipped} skipped</span>
-              {stats.summary.averageLatenessMinutes !== null && (
-                <span className="stat-pill stat-pill-lateness">avg {formatDeltaShort(stats.summary.averageLatenessMinutes)}</span>
-              )}
-              {stats.summary.bestLatenessMinutes !== null && (
-                <span className="stat-pill stat-pill-lateness">best {formatDeltaShort(stats.summary.bestLatenessMinutes)}</span>
-              )}
-              {stats.summary.worstLatenessMinutes !== null && (
-                <span className="stat-pill stat-pill-lateness">worst {formatDeltaShort(stats.summary.worstLatenessMinutes)}</span>
-              )}
             </div>
-          </section>
-
-          <section className="settings-grid">
-            <article className="panel">
-              <div className="panel-head">
-                <h2>Daily Accuracy</h2>
-                <span>Average lateness by day</span>
-              </div>
-              <BarChart
-                items={stats.perDay.map((point) => ({
-                  label: point.date.slice(5),
-                  value: point.averageLatenessMinutes ?? 0,
-                }))}
-                emptyLabel="No completed doses in this range."
-                valueFormatter={(value) => `${value}m`}
-              />
-            </article>
-
-            <article className="panel">
-              <div className="panel-head">
-                <h2>User Breakdown</h2>
-                <span>Who logged medication</span>
-              </div>
-              <BarChart
-                items={stats.userBreakdown.map((item) => ({
-                  label: item.name,
-                  value: item.completedCount,
-                }))}
-                emptyLabel="No completed doses in this range."
-                valueFormatter={(value) => `${value}`}
-              />
-            </article>
+            {stats.summary.averageLatenessMinutes !== null ? (
+              <p className="summary-line">
+                Avg {formatDuration(stats.summary.averageLatenessMinutes)}
+                {stats.summary.bestLatenessMinutes !== null ? <> · best {formatDuration(stats.summary.bestLatenessMinutes)}</> : null}
+                {stats.summary.worstLatenessMinutes !== null ? <> · worst {formatDuration(stats.summary.worstLatenessMinutes)}</> : null}
+              </p>
+            ) : null}
+            {stats.userBreakdown.length > 0 ? (
+              <p className="summary-line">Logged by {stats.userBreakdown.map((item) => `${item.name} ${item.completedCount}`).join(' · ')}</p>
+            ) : null}
           </section>
 
           <section className="panel">
             <div className="panel-head">
-              <h2>Per-Day Detail</h2>
+              <h2>By Day</h2>
               <span>{stats.perDay.length} days</span>
             </div>
             <div className="activity">
-              {stats.perDay.map((point) => (
-                <div className="activity-row" key={point.date}>
-                  <div><strong>{point.date}</strong></div>
-                  <div className="perday-pills">
-                    <span className="stat-pill stat-pill-done">{point.completedCount} done</span>
-                    {point.skippedCount > 0 && <span className="stat-pill stat-pill-skipped">{point.skippedCount} skipped</span>}
-                    {point.averageLatenessMinutes !== null && <span className="stat-pill stat-pill-lateness">avg {formatDeltaShort(point.averageLatenessMinutes)}</span>}
+              {stats.perDay.map((point) => {
+                const empty = point.completedCount === 0 && point.skippedCount === 0;
+                return (
+                  <div className={empty ? 'activity-row activity-row-empty' : 'activity-row'} key={point.date}>
+                    <div><strong>{formatDayLabel(point.date)}</strong></div>
+                    {empty ? (
+                      <span className="muted">No doses</span>
+                    ) : (
+                      <div className="perday-pills">
+                        <span className="stat-pill stat-pill-done">{point.completedCount} done</span>
+                        {point.skippedCount > 0 && <span className="stat-pill stat-pill-skipped">{point.skippedCount} skipped</span>}
+                        {point.averageLatenessMinutes !== null && <span className="stat-pill stat-pill-lateness">avg {formatDuration(point.averageLatenessMinutes)}</span>}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         </>
@@ -746,7 +759,7 @@ export default function App() {
           <section className="panel">
             <div className="panel-head">
               <h2>Notifications</h2>
-              <span>{pushState.subscribed ? 'Active' : 'Setup'}</span>
+              <span>{pushState.subscribed ? 'On' : 'Off'}</span>
             </div>
             <p className="small compact-copy">{pushState.message}</p>
             <div className="inline-actions">
@@ -761,49 +774,26 @@ export default function App() {
 
           <section className="panel">
             <div className="panel-head compact-head">
-              <h2>Date Overrides</h2>
+              <h2>Schedule</h2>
+              <span>{formatDateRange(settingsRange.startDate, settingsRange.endDate)}</span>
             </div>
-            <div className="settings-step">
-              <div className="settings-step-label">1 · Preview a date</div>
+            <p className="small settings-step-note">Set dose times for a range of dates, or skip a slot (boarding, vet stay). Changing the start date loads that day's current schedule.</p>
+            <div className="range-grid">
               <label className="settings-field">
-                Date
-                <input type="date" value={settings.date} min={settings.minDate} onChange={(event) => void handleSettingsDateChange(event.target.value)} />
+                From
+                <input type="date" value={settingsRange.startDate} min={settings.minDate} onChange={(event) => void handleSettingsDateChange(event.target.value)} />
               </label>
-              <p className="small settings-step-note">Changing this resets any edits you've made to the slot cards below.</p>
+              <label className="settings-field">
+                To
+                <input type="date" value={settingsRange.endDate} min={settingsRange.startDate || settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, endDate: event.target.value }))} />
+              </label>
             </div>
-            <div className="settings-step">
-              <div className="settings-step-label">2 · Apply to a date range</div>
-              <div className="range-grid">
-                <label className="settings-field">
-                  Start
-                  <input type="date" value={settingsRange.startDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, startDate: event.target.value }))} />
-                </label>
-                <label className="settings-field">
-                  End
-                  <input type="date" value={settingsRange.endDate} min={settings.minDate} onChange={(event) => setSettingsRange((current) => ({ ...current, endDate: event.target.value }))} />
-                </label>
-              </div>
-              <button className="primary" type="button" onClick={() => void handleBatchSave()} disabled={actionBusy === 'settings-batch'}>
-                {actionBusy === 'settings-batch' ? 'Saving…' : 'Apply to Range'}
-              </button>
-            </div>
-          </section>
-
-          <section className="settings-grid">
-            <article className="panel settings-column">
-              <div className="panel-head compact-head">
-                <h2>Range Template</h2>
-                <span>{settingsRange.startDate} to {settingsRange.endDate}</span>
-              </div>
-              <div className="settings-slots">
-                {settingsDrafts.map((slot) => (
-                  <div className="settings-slot-card" key={slot.key}>
-                    <div className="slot-title">
-                      <strong>{slot.label}</strong>
-                      <span>Default {slot.defaultTime}</span>
-                    </div>
+            <div className="settings-slots">
+              {settingsDrafts.map((slot) => (
+                <div className="settings-slot-card" key={slot.key}>
+                  <div className="slot-edit-row">
                     <label className="settings-field">
-                      Time
+                      <span className="slot-edit-label"><strong>{slot.label}</strong> <span className="muted small">· default {slot.defaultTime}</span></span>
                       <input
                         type="time"
                         value={slot.time}
@@ -817,8 +807,10 @@ export default function App() {
                         checked={slot.skipped}
                         onChange={(event) => setSettingsDrafts((current) => current.map((item) => item.key === slot.key ? { ...item, skipped: event.target.checked } : item))}
                       />
-                      Skip this slot for the range
+                      Skip
                     </label>
+                  </div>
+                  {slot.skipped ? (
                     <label className="settings-field">
                       Reason
                       <input
@@ -828,31 +820,34 @@ export default function App() {
                         placeholder="Boarding, vet stay, etc."
                       />
                     </label>
-                  </div>
-                ))}
-              </div>
-            </article>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <button className="primary" type="button" onClick={() => void handleBatchSave()} disabled={actionBusy === 'settings-batch'}>
+              {actionBusy === 'settings-batch' ? 'Saving…' : 'Save schedule'}
+            </button>
+          </section>
 
-            <article className="panel settings-column">
-              <div className="panel-head compact-head">
-                <h2>Upcoming Overrides</h2>
-                <span>{settings.upcomingCustomizations.length} entries</span>
-              </div>
-              <div className="activity">
-                {settings.upcomingCustomizations.length === 0 ? (
-                  <div className="muted">No future exceptions set.</div>
-                ) : (
-                  settings.upcomingCustomizations.map((item) => (
-                    <div className="activity-row" key={`${item.date}:${item.slotKey}`}>
-                      <div><strong>{item.date}</strong> · {item.label}</div>
-                      <div className="status">
-                        {item.skipped ? `Skipped${item.reason ? `: ${item.reason}` : ''}` : `Time override: ${item.overrideTime}`}
-                      </div>
+          <section className="panel">
+            <div className="panel-head compact-head">
+              <h2>Upcoming changes</h2>
+              <span>{settings.upcomingCustomizations.length}</span>
+            </div>
+            <div className="activity">
+              {settings.upcomingCustomizations.length === 0 ? (
+                <div className="muted">No upcoming changes — defaults apply every day.</div>
+              ) : (
+                settings.upcomingCustomizations.map((item) => (
+                  <button className="activity-row activity-row-button" type="button" key={`${item.date}:${item.slotKey}`} onClick={() => void handleSettingsDateChange(item.date)}>
+                    <div><strong>{formatDayLabel(item.date)}</strong> · {item.label}</div>
+                    <div className="status">
+                      {item.skipped ? `Skipped${item.reason ? `: ${item.reason}` : ''}` : item.overrideTime ? `→ ${item.overrideTime}` : 'Changed'}
                     </div>
-                  ))
-                )}
-              </div>
-            </article>
+                  </button>
+                ))
+              )}
+            </div>
           </section>
         </>
       ) : null}
@@ -936,46 +931,6 @@ function formatSlotDetail(slot: Slot): string {
   return 'Not logged yet.';
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="stat-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function BarChart({
-  items,
-  emptyLabel,
-  valueFormatter,
-}: {
-  items: Array<{ label: string; value: number }>;
-  emptyLabel: string;
-  valueFormatter: (value: number) => string;
-}) {
-  const max = Math.max(...items.map((item) => item.value), 0);
-  if (!items.length || max === 0) {
-    return <div className="muted">{emptyLabel}</div>;
-  }
-
-  return (
-    <div className="bar-chart">
-      {items.map((item) => (
-        <div className="bar-row" key={item.label}>
-          <div className="bar-meta">
-            <span>{item.label}</span>
-            <strong>{valueFormatter(item.value)}</strong>
-          </div>
-          <div className="bar-track">
-            <div className="bar-fill" style={{ width: `${(item.value / max) * 100}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function makeSettingsDrafts(settings: SettingsData): SettingsSlotDraft[] {
   return settings.slots.map((slot) => ({
     key: slot.key,
@@ -1012,10 +967,34 @@ function formatTimestamp(value: string | null): string {
   }).format(date);
 }
 
-function formatDeltaShort(value: number): string {
-  if (value === 0) return 'on time';
-  if (value > 0) return `+${value}m`;
-  return `${value}m`;
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatDayLabel(iso: string): string {
+  const parts = iso.split('-').map(Number);
+  if (parts.length !== 3 || !parts[0] || !parts[1]) return iso;
+  return `${MONTH_ABBR[parts[1] - 1]} ${parts[2]}`;
+}
+
+function formatDateRange(start: string, end: string): string {
+  if (!start || !end) return '';
+  if (start === end) return formatDayLabel(start);
+  return `${formatDayLabel(start)} – ${formatDayLabel(end)}`;
+}
+
+function isoMinusDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - days);
+  return dt.toISOString().slice(0, 10);
+}
+
+function formatDuration(minutes: number): string {
+  if (minutes === 0) return 'on time';
+  const abs = Math.abs(minutes);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  const hm = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+  return `${hm} ${minutes > 0 ? 'late' : 'early'}`;
 }
 
 function formatDelta(value: number | null): string {
