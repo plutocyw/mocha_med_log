@@ -693,7 +693,7 @@ select:focus {
   width: min(520px, calc(100% - 1rem));
   bottom: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 0.5rem;
   padding: 0.55rem calc(0.55rem + env(safe-area-inset-left)) calc(0.55rem + env(safe-area-inset-bottom)) calc(0.55rem + env(safe-area-inset-right));
   background: rgba(247, 239, 231, 0.95);
@@ -739,6 +739,14 @@ select:focus {
 
 .compact-metric-strip::-webkit-scrollbar {
   display: none;
+}
+
+.health-milestone {
+  color: #6b4a39;
+  font-size: 0.93rem;
+  border-left: 3px solid rgba(111, 47, 29, 0.25);
+  padding-left: 0.65rem;
+  margin-bottom: 0;
 }
 
 @media (max-width: 760px) {

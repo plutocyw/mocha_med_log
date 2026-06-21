@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 
-type View = 'home' | 'stats' | 'settings';
+type View = 'home' | 'stats' | 'settings' | 'health';
 
 const STATS_PRESETS: Array<{ id: string; label: string; days: number | null }> = [
   { id: '7d', label: '7 days', days: 7 },
@@ -99,6 +99,19 @@ type StatsData = {
   };
 };
 
+type SeizureEvent = {
+  id: string;
+  date: string;
+  notes: string | null;
+  loggedByName: string | null;
+  createdAt: string;
+};
+
+type SeizuresData = {
+  medicationStartDate: string;
+  events: SeizureEvent[];
+};
+
 type BootstrapData = {
   me: User;
   timezone: string;
@@ -165,6 +178,9 @@ export default function App() {
   const [appError, setAppError] = useState('');
   const [password, setPassword] = useState('');
   const [selectedUserId, setSelectedUserId] = useState('');
+  const [seizures, setSeizures] = useState<SeizuresData | null>(null);
+  const [newSeizureDate, setNewSeizureDate] = useState('');
+  const [newSeizureNotes, setNewSeizureNotes] = useState('');
 
   useEffect(() => {
     void initialize();
@@ -231,6 +247,49 @@ export default function App() {
     return (await response.json()) as StatsData;
   }
 
+  async function fetchSeizures(): Promise<SeizuresData> {
+    const response = await fetch('/api/seizures', { headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error('Failed to load seizure history.');
+    return (await response.json()) as SeizuresData;
+  }
+
+  async function loadSeizures() {
+    if (seizures !== null) return;
+    setActionBusy('seizures-load');
+    try {
+      const data = await fetchSeizures();
+      setSeizures(data);
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to load seizure history.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleLogSeizure(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionBusy('seizure-log');
+    try {
+      const response = await fetch('/api/seizures', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ date: newSeizureDate, notes: newSeizureNotes || null }),
+      });
+      if (!response.ok) throw new Error('Failed to log seizure.');
+      const data = (await response.json()) as SeizuresData;
+      setSeizures(data);
+      setNewSeizureNotes('');
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to log seizure.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   async function loadBootstrapAndViews() {
     const response = await fetch('/api/bootstrap', { headers: { accept: 'application/json' } });
     if (response.status === 401) {
@@ -255,6 +314,7 @@ export default function App() {
       startDate: data.startDate,
       endDate: data.todayDate,
     });
+    setNewSeizureDate(data.todayDate);
     const statsData = await fetchStats(data.startDate, data.todayDate);
     setStats(statsData);
     setAppError('');
@@ -269,6 +329,9 @@ export default function App() {
     setSettingsRange({ startDate: '', endDate: '' });
     setStats(null);
     setStatsRange({ startDate: '', endDate: '' });
+    setSeizures(null);
+    setNewSeizureDate('');
+    setNewSeizureNotes('');
     setPushState(initialPushState);
     setSelectedDate('');
     setView('home');
@@ -852,6 +915,67 @@ export default function App() {
         </>
       ) : null}
 
+      {view === 'health' ? (
+        seizures ? (
+          <>
+            <section className="panel">
+              <div className="panel-head">
+                <h2>Mocha's Health</h2>
+              </div>
+              <p className="health-milestone">Medication started {formatFullDate(seizures.medicationStartDate)}</p>
+              <div className="day-stats-row" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+                {seizures.events.length > 0 ? (
+                  <span className="stat-pill stat-pill-done">{daysBetween(seizures.events[0].date, bootstrap.todayDate)}d since last seizure</span>
+                ) : null}
+                <span className="stat-pill stat-pill-lateness">{daysBetween(seizures.medicationStartDate, bootstrap.todayDate)}d on medication</span>
+                <span className="stat-pill stat-pill-skipped">{seizures.events.length} total seizures</span>
+              </div>
+            </section>
+
+            <form className="panel" onSubmit={(e) => void handleLogSeizure(e)}>
+              <div className="panel-head compact-head"><h2>Log a seizure</h2></div>
+              <div className="settings-slots" style={{ marginTop: '0.9rem' }}>
+                <label className="settings-field">
+                  Date
+                  <input type="date" value={newSeizureDate} max={bootstrap.todayDate} onChange={(e) => setNewSeizureDate(e.target.value)} required />
+                </label>
+                <label className="settings-field">
+                  Notes <span className="muted">(optional)</span>
+                  <input type="text" value={newSeizureNotes} placeholder="Duration, behavior, etc." onChange={(e) => setNewSeizureNotes(e.target.value)} />
+                </label>
+              </div>
+              <button className="primary" style={{ marginTop: '0.75rem' }} type="submit" disabled={actionBusy === 'seizure-log'}>
+                {actionBusy === 'seizure-log' ? 'Saving…' : 'Log seizure'}
+              </button>
+            </form>
+
+            <section className="panel">
+              <div className="panel-head">
+                <h2>History</h2>
+                <span>{seizures.events.length} episodes</span>
+              </div>
+              <div className="activity">
+                {seizures.events.length === 0 ? (
+                  <div className="muted">No episodes logged yet.</div>
+                ) : (
+                  seizures.events.map((evt) => (
+                    <div className="activity-row" key={evt.id}>
+                      <div>
+                        <strong>{formatFullDate(evt.date)}</strong>
+                        {evt.notes ? <span className="muted"> · {evt.notes}</span> : null}
+                      </div>
+                      {evt.loggedByName ? <span className="status">{evt.loggedByName}</span> : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </>
+        ) : (
+          <div className="panel muted">Loading…</div>
+        )
+      ) : null}
+
       {appError ? <div className="toast">{appError}</div> : null}
 
       <nav className="bottom-nav">
@@ -862,6 +986,10 @@ export default function App() {
         <button className={view === 'stats' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('stats')}>
           <StatsIcon />
           <span>Stats</span>
+        </button>
+        <button className={view === 'health' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => { setView('health'); void loadSeizures(); }}>
+          <HealthIcon />
+          <span>Health</span>
         </button>
         <button className={view === 'settings' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('settings')}>
           <SettingsIcon />
@@ -988,6 +1116,18 @@ function isoMinusDays(iso: string, days: number): string {
   return dt.toISOString().slice(0, 10);
 }
 
+function formatFullDate(iso: string): string {
+  const parts = iso.split('-').map(Number);
+  if (parts.length !== 3 || !parts[0] || !parts[1]) return iso;
+  return `${MONTH_ABBR[parts[1] - 1]} ${parts[2]}, ${parts[0]}`;
+}
+
+function daysBetween(from: string, to: string): number {
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000);
+}
+
 function formatDuration(minutes: number): string {
   if (minutes === 0) return 'on time';
   const abs = Math.abs(minutes);
@@ -1027,6 +1167,14 @@ function SettingsIcon() {
     <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
       <circle cx="10" cy="10" r="2.8"/>
       <path d="M17.2 11.2l1.4-1.1-1.4-2.4-1.8.7a6.6 6.6 0 00-1.8-1l-.3-1.9H10l-.3 1.9a6.6 6.6 0 00-1.8 1l-1.8-.7-1.4 2.4 1.4 1.1a6.5 6.5 0 000 2.4l-1.4 1.1 1.4 2.4 1.8-.7a6.6 6.6 0 001.8 1l.3 1.9h3.3l.3-1.9a6.6 6.6 0 001.8-1l1.8.7 1.4-2.4-1.4-1.1a6.5 6.5 0 000-2.4z"/>
+    </svg>
+  );
+}
+
+function HealthIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10 16.5l-1.4-1.28C4.4 11.4 2 9.3 2 6.5 2 4.42 3.58 3 5.5 3c1.24 0 2.44.57 3.5 1.76C10.06 3.57 11.26 3 12.5 3 14.42 3 16 4.42 16 6.5c0 2.8-2.4 4.9-6.6 8.72L10 16.5z"/>
     </svg>
   );
 }

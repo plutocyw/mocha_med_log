@@ -65,6 +65,14 @@ type SkippedRow = {
   reason: string | null;
 };
 
+type SeizureRow = {
+  id: string;
+  occurred_on: string;
+  notes: string | null;
+  created_at: string;
+  created_by_name: string | null;
+};
+
 type DayStats = {
   completedCount: number;
   pendingCount: number;
@@ -87,6 +95,7 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const DEFAULT_TIMEZONE = 'America/Los_Angeles';
 const DEFAULT_REMINDER_INTERVAL_MINUTES = 5;
 const TRACKING_START_DATE = '2026-06-08';
+const MEDICATION_START_DATE = '2026-05-25';
 const SLOT_DEFINITIONS = [
   { key: 'morning', label: '8:30 AM', time: '08:30' },
   { key: 'afternoon', label: '4:30 PM', time: '16:30' },
@@ -171,6 +180,14 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
 
     if (request.method === 'POST' && url.pathname === '/api/push/unsubscribe') {
       return disablePushSubscription(request, env);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/seizures') {
+      return listSeizures(env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/seizures') {
+      return logSeizure(request, env, session);
     }
 
     const completeMatch = url.pathname.match(/^\/api\/slots\/([^/]+)\/complete$/);
@@ -652,6 +669,52 @@ async function completeSlot(
   }
 
   return json({ slot: mapSlotRow(slot, getTimezone(env)) });
+}
+
+async function listSeizures(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT s.id, s.occurred_on, s.notes, s.created_at, u.name AS created_by_name
+     FROM seizure_events s
+     LEFT JOIN users u ON u.id = s.created_by_user_id
+     ORDER BY s.occurred_on DESC, s.created_at DESC`,
+  ).all<SeizureRow>();
+
+  return json({
+    medicationStartDate: MEDICATION_START_DATE,
+    events: rows.results.map((row) => ({
+      id: row.id,
+      date: row.occurred_on,
+      notes: row.notes,
+      loggedByName: row.created_by_name,
+      createdAt: row.created_at,
+    })),
+  });
+}
+
+async function logSeizure(
+  request: Request,
+  env: Env,
+  session: SessionPayload & { uid: string; name: string },
+): Promise<Response> {
+  const body = await request.json<{ date?: string; notes?: string }>().catch(() => null);
+  const date = String(body?.date ?? '').trim();
+  const notes = body?.notes ? String(body.notes).trim() : null;
+
+  if (!isIsoDate(date)) {
+    return json({ error: 'A valid date is required.' }, 400);
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await env.DB.prepare(
+    `INSERT INTO seizure_events (id, occurred_on, notes, created_at, created_by_user_id)
+     VALUES (?1, ?2, ?3, ?4, ?5)`,
+  )
+    .bind(id, date, notes, now, session.uid)
+    .run();
+
+  return listSeizures(env);
 }
 
 async function runReminderSweep(env: Env, now: Date): Promise<void> {
