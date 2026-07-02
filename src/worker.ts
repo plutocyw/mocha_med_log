@@ -68,6 +68,7 @@ type SkippedRow = {
 type SeizureRow = {
   id: string;
   occurred_on: string;
+  occurred_time: string | null;
   notes: string | null;
   created_at: string;
   created_by_name: string | null;
@@ -190,9 +191,19 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
       return logSeizure(request, env, session);
     }
 
+    const seizureMatch = url.pathname.match(/^\/api\/seizures\/([^/]+)$/);
+    if (request.method === 'DELETE' && seizureMatch) {
+      return deleteSeizure(env, decodeURIComponent(seizureMatch[1]));
+    }
+
     const completeMatch = url.pathname.match(/^\/api\/slots\/([^/]+)\/complete$/);
     if (request.method === 'POST' && completeMatch) {
       return completeSlot(env, session, decodeURIComponent(completeMatch[1]));
+    }
+
+    const uncompleteMatch = url.pathname.match(/^\/api\/slots\/([^/]+)\/uncomplete$/);
+    if (request.method === 'POST' && uncompleteMatch) {
+      return uncompleteSlot(env, decodeURIComponent(uncompleteMatch[1]));
     }
 
     return json({ error: 'Not found.' }, 404);
@@ -645,6 +656,27 @@ async function completeSlot(
     .bind(now, session.uid, slotId, TRACKING_START_DATE)
     .run();
 
+  return slotResponse(env, slotId);
+}
+
+async function uncompleteSlot(env: Env, slotId: string): Promise<Response> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE slots
+      SET status = 'pending',
+          completed_at = NULL,
+          completed_by_user_id = NULL,
+          updated_at = ?1
+      WHERE id = ?2
+        AND status = 'completed'`,
+  )
+    .bind(now, slotId)
+    .run();
+
+  return slotResponse(env, slotId);
+}
+
+async function slotResponse(env: Env, slotId: string): Promise<Response> {
   const slot = await env.DB.prepare(
     `SELECT
       slots.id,
@@ -673,10 +705,10 @@ async function completeSlot(
 
 async function listSeizures(env: Env): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT s.id, s.occurred_on, s.notes, s.created_at, u.name AS created_by_name
+    `SELECT s.id, s.occurred_on, s.occurred_time, s.notes, s.created_at, u.name AS created_by_name
      FROM seizure_events s
      LEFT JOIN users u ON u.id = s.created_by_user_id
-     ORDER BY s.occurred_on DESC, s.created_at DESC`,
+     ORDER BY s.occurred_on DESC, s.occurred_time DESC, s.created_at DESC`,
   ).all<SeizureRow>();
 
   return json({
@@ -684,6 +716,7 @@ async function listSeizures(env: Env): Promise<Response> {
     events: rows.results.map((row) => ({
       id: row.id,
       date: row.occurred_on,
+      time: row.occurred_time,
       notes: row.notes,
       loggedByName: row.created_by_name,
       createdAt: row.created_at,
@@ -696,24 +729,34 @@ async function logSeizure(
   env: Env,
   session: SessionPayload & { uid: string; name: string },
 ): Promise<Response> {
-  const body = await request.json<{ date?: string; notes?: string }>().catch(() => null);
+  const body = await request.json<{ date?: string; time?: string | null; notes?: string }>().catch(() => null);
   const date = String(body?.date ?? '').trim();
+  const time = body?.time ? String(body.time).trim() : null;
   const notes = body?.notes ? String(body.notes).trim() : null;
 
   if (!isIsoDate(date)) {
     return json({ error: 'A valid date is required.' }, 400);
   }
 
+  if (time && !isTimeString(time)) {
+    return json({ error: 'Time must be in HH:MM format.' }, 400);
+  }
+
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
   await env.DB.prepare(
-    `INSERT INTO seizure_events (id, occurred_on, notes, created_at, created_by_user_id)
-     VALUES (?1, ?2, ?3, ?4, ?5)`,
+    `INSERT INTO seizure_events (id, occurred_on, occurred_time, notes, created_at, created_by_user_id)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
   )
-    .bind(id, date, notes, now, session.uid)
+    .bind(id, date, time, notes, now, session.uid)
     .run();
 
+  return listSeizures(env);
+}
+
+async function deleteSeizure(env: Env, id: string): Promise<Response> {
+  await env.DB.prepare('DELETE FROM seizure_events WHERE id = ?1').bind(id).run();
   return listSeizures(env);
 }
 

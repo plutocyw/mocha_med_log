@@ -102,6 +102,7 @@ type StatsData = {
 type SeizureEvent = {
   id: string;
   date: string;
+  time: string | null;
   notes: string | null;
   loggedByName: string | null;
   createdAt: string;
@@ -180,7 +181,10 @@ export default function App() {
   const [selectedUserId, setSelectedUserId] = useState('');
   const [seizures, setSeizures] = useState<SeizuresData | null>(null);
   const [newSeizureDate, setNewSeizureDate] = useState('');
+  const [newSeizureTime, setNewSeizureTime] = useState('');
   const [newSeizureNotes, setNewSeizureNotes] = useState('');
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     void initialize();
@@ -191,10 +195,43 @@ export default function App() {
     void refreshPushState(bootstrap.vapidPublicKey);
   }, [bootstrap]);
 
+  useEffect(() => {
+    if (!appError) return;
+    const timer = setTimeout(() => setAppError(''), 8000);
+    return () => clearTimeout(timer);
+  }, [appError]);
+
+  useEffect(() => {
+    if (!savedNotice) return;
+    const timer = setTimeout(() => setSavedNotice(null), 2200);
+    return () => clearTimeout(timer);
+  }, [savedNotice]);
+
+  useEffect(() => {
+    if (!confirmDeleteId) return;
+    const timer = setTimeout(() => setConfirmDeleteId(null), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmDeleteId]);
+
   const nextPending = useMemo(() => {
-    if (!bootstrap || !day) return null;
-    return [...bootstrap.overdue, ...day.slots].find((slot) => slot.status === 'pending') ?? null;
+    if (!bootstrap || !day || day.date !== bootstrap.todayDate) return null;
+    return day.slots.find((slot) => slot.status === 'pending') ?? null;
   }, [bootstrap, day]);
+
+  const overdueOpenCount = useMemo(
+    () => bootstrap?.overdue.filter((slot) => slot.status === 'pending').length ?? 0,
+    [bootstrap],
+  );
+
+  const adherence = useMemo(() => {
+    if (!stats || !bootstrap) return null;
+    const missedCount = stats.perDay.reduce(
+      (sum, point) => sum + (point.date < bootstrap.todayDate ? point.pendingCount : 0),
+      0,
+    );
+    const dueTotal = stats.summary.totalCompleted + missedCount;
+    return { missedCount, dueTotal };
+  }, [stats, bootstrap]);
 
   async function initialize() {
     setLoading(true);
@@ -275,16 +312,35 @@ export default function App() {
       const response = await fetch('/api/seizures', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ date: newSeizureDate, notes: newSeizureNotes || null }),
+        body: JSON.stringify({ date: newSeizureDate, time: newSeizureTime || null, notes: newSeizureNotes || null }),
       });
       if (!response.ok) throw new Error('Failed to log seizure.');
       const data = (await response.json()) as SeizuresData;
       setSeizures(data);
+      setNewSeizureTime('');
       setNewSeizureNotes('');
+      setSavedNotice('seizure-log');
       setAppError('');
     } catch (error) {
       console.error(error);
       setAppError('Unable to log seizure.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleDeleteSeizure(id: string) {
+    setActionBusy(`seizure-delete-${id}`);
+    try {
+      const response = await fetch(`/api/seizures/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Failed to delete seizure.');
+      const data = (await response.json()) as SeizuresData;
+      setSeizures(data);
+      setConfirmDeleteId(null);
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to delete that entry.');
     } finally {
       setActionBusy(null);
     }
@@ -331,7 +387,10 @@ export default function App() {
     setStatsRange({ startDate: '', endDate: '' });
     setSeizures(null);
     setNewSeizureDate('');
+    setNewSeizureTime('');
     setNewSeizureNotes('');
+    setSavedNotice(null);
+    setConfirmDeleteId(null);
     setPushState(initialPushState);
     setSelectedDate('');
     setView('home');
@@ -403,20 +462,29 @@ export default function App() {
   }
 
   async function handleComplete(slotId: string) {
+    await changeSlotStatus(slotId, 'complete', 'Unable to mark that dose complete.');
+  }
+
+  async function handleUncomplete(slotId: string) {
+    await changeSlotStatus(slotId, 'uncomplete', 'Unable to undo that completion.');
+  }
+
+  async function changeSlotStatus(slotId: string, action: 'complete' | 'uncomplete', errorMessage: string) {
     if (!bootstrap) return;
     setActionBusy(slotId);
     try {
-      const response = await fetch(`/api/slots/${encodeURIComponent(slotId)}/complete`, { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to complete slot.');
+      const response = await fetch(`/api/slots/${encodeURIComponent(slotId)}/${action}`, { method: 'POST' });
+      if (!response.ok) throw new Error(`Failed to ${action} slot.`);
+      const { slot } = (await response.json()) as { slot: Slot };
       const dayResponse = await fetchDay(selectedDate || bootstrap.todayDate);
       setDay(dayResponse.day);
-      setBootstrap((prev) => prev ? { ...prev, overdue: prev.overdue.filter((s) => s.id !== slotId) } : prev);
+      setBootstrap((prev) => prev ? { ...prev, overdue: prev.overdue.map((s) => (s.id === slot.id ? slot : s)) } : prev);
       const statsData = await fetchStats(statsRange.startDate, statsRange.endDate);
       setStats(statsData);
       setAppError('');
     } catch (error) {
       console.error(error);
-      setAppError('Unable to mark that dose complete.');
+      setAppError(errorMessage);
     } finally {
       setActionBusy(null);
     }
@@ -507,6 +575,7 @@ export default function App() {
         setSettings(refreshed);
         setSettingsDrafts(makeSettingsDrafts(refreshed));
       }
+      setSavedNotice('settings-batch');
       setAppError('');
     } catch (error) {
       console.error(error);
@@ -634,8 +703,8 @@ export default function App() {
       <Shell>
         <section className="hero hero-login">
           <div className="eyebrow">Mocha Med Log</div>
-          <h1>Medication tracking for Mocha with push reminders that do not stop until someone logs the dose.</h1>
-          <p>First unlock the site with the shared password. After that, pick whether this is Johnny or Pai.</p>
+          <h1>Every dose, on time.</h1>
+          <p>Medication tracking for Mocha, with push reminders that repeat until someone logs the dose. Unlock with the shared password, then pick whether this is Johnny or Pai.</p>
         </section>
         {authState.stage === 'password' ? (
           <form className="panel login-form" onSubmit={handleUnlock}>
@@ -680,14 +749,15 @@ export default function App() {
   return (
     <Shell>
       <section className="panel app-bar">
-        <div className="app-bar-top">
-          <div>
-            <div className="eyebrow">Mocha Med Log</div>
-            <div className="app-bar-title">
-              {view === 'home' && nextPending ? `${nextPending.label} next up` : view[0].toUpperCase() + view.slice(1)}
-            </div>
-          </div>
-          <button className="ghost small-button" type="button" onClick={handleLogout} disabled={actionBusy === 'logout'}>Sign out</button>
+        <div className="eyebrow">Mocha Med Log</div>
+        <div className="app-bar-title">
+          {view === 'home'
+            ? selectedDate === bootstrap.todayDate
+              ? nextPending
+                ? `${formatTime12(nextPending.time)} next up`
+                : 'All done today'
+              : formatWeekdayLabel(selectedDate)
+            : view[0].toUpperCase() + view.slice(1)}
         </div>
         <div className="app-bar-subtitle">
           Signed in as <strong>{bootstrap.me.name}</strong>
@@ -699,16 +769,36 @@ export default function App() {
           {day ? (
             <section className="panel compact-day-panel">
               <div className="home-date-row">
+                <button
+                  className="ghost icon-button"
+                  type="button"
+                  aria-label="Previous day"
+                  disabled={actionBusy === 'home-date' || !selectedDate || selectedDate <= bootstrap.startDate}
+                  onClick={() => void handleDayChange(isoMinusDays(selectedDate, 1))}
+                >
+                  ‹
+                </button>
                 <input aria-label="Select date" type="date" value={selectedDate} min={bootstrap.startDate} max={bootstrap.todayDate} onChange={(event) => void handleDayChange(event.target.value)} />
+                <button
+                  className="ghost icon-button"
+                  type="button"
+                  aria-label="Next day"
+                  disabled={actionBusy === 'home-date' || !selectedDate || selectedDate >= bootstrap.todayDate}
+                  onClick={() => void handleDayChange(isoMinusDays(selectedDate, -1))}
+                >
+                  ›
+                </button>
               </div>
               <div className="day-stats-row">
                 <span className="stat-pill stat-pill-done">{day.stats.completedCount} done</span>
-                <span className="stat-pill stat-pill-pending">{day.stats.pendingCount} pending</span>
+                <span className="stat-pill stat-pill-pending">
+                  {day.stats.pendingCount} {selectedDate === bootstrap.todayDate ? 'pending' : 'missed'}
+                </span>
                 <span className="stat-pill stat-pill-skipped">{day.stats.skippedCount} skipped</span>
               </div>
               <div className="slots">
                 {day.slots.map((slot) => (
-                  <SlotCard key={slot.id} slot={slot} busy={actionBusy === slot.id} onComplete={() => void handleComplete(slot.id)} />
+                  <SlotCard key={slot.id} slot={slot} busy={actionBusy === slot.id} onComplete={() => void handleComplete(slot.id)} onUncomplete={() => void handleUncomplete(slot.id)} />
                 ))}
               </div>
             </section>
@@ -718,11 +808,11 @@ export default function App() {
             <section className="panel">
               <div className="panel-head">
                 <h2>Overdue</h2>
-                <span>{bootstrap.overdue.length} open slots</span>
+                <span>{overdueOpenCount} missed dose{overdueOpenCount === 1 ? '' : 's'}</span>
               </div>
               <div className="slots">
                 {bootstrap.overdue.map((slot) => (
-                  <SlotCard key={slot.id} slot={slot} busy={actionBusy === slot.id} onComplete={() => void handleComplete(slot.id)} />
+                  <SlotCard key={slot.id} slot={slot} showDate busy={actionBusy === slot.id} onComplete={() => void handleComplete(slot.id)} onUncomplete={() => void handleUncomplete(slot.id)} />
                 ))}
               </div>
             </section>
@@ -773,8 +863,14 @@ export default function App() {
 
           <section className="panel">
             <div className="panel-head"><h2>Summary</h2></div>
+            {adherence && adherence.dueTotal > 0 ? (
+              <p className="adherence-line">
+                <strong>{Math.round((stats.summary.totalCompleted / adherence.dueTotal) * 100)}%</strong> adherence · {stats.summary.totalCompleted} of {adherence.dueTotal} due doses
+              </p>
+            ) : null}
             <div className="day-stats-row">
               <span className="stat-pill stat-pill-done">{stats.summary.totalCompleted} completed</span>
+              {adherence && adherence.missedCount > 0 ? <span className="stat-pill stat-pill-pending">{adherence.missedCount} missed</span> : null}
               <span className="stat-pill stat-pill-skipped">{stats.summary.totalSkipped} skipped</span>
             </div>
             {stats.summary.averageLatenessMinutes !== null ? (
@@ -785,30 +881,38 @@ export default function App() {
               </p>
             ) : null}
             {stats.userBreakdown.length > 0 ? (
-              <p className="summary-line">Logged by {stats.userBreakdown.map((item) => `${item.name} ${item.completedCount}`).join(' · ')}</p>
+              <p className="summary-line">Logged by {stats.userBreakdown.map((item) => `${item.name}: ${item.completedCount}`).join(' · ')}</p>
             ) : null}
           </section>
 
           <section className="panel">
             <div className="panel-head">
               <h2>By Day</h2>
-              <span>{stats.perDay.length} days</span>
+              <span>{stats.perDay.length} days · latest first</span>
             </div>
             <div className="activity">
-              {stats.perDay.map((point) => {
-                const empty = point.completedCount === 0 && point.skippedCount === 0;
-                return (
-                  <div className={empty ? 'activity-row activity-row-empty' : 'activity-row'} key={point.date}>
-                    <div><strong>{formatDayLabel(point.date)}</strong></div>
-                    {empty ? (
+              {buildByDayRows(stats.perDay).map((row) => {
+                if (row.kind === 'empty') {
+                  return (
+                    <div className="activity-row activity-row-empty" key={`empty-${row.startDate}`}>
+                      <div><strong>{formatDateRange(row.startDate, row.endDate)}</strong></div>
                       <span className="muted">No doses</span>
-                    ) : (
-                      <div className="perday-pills">
-                        <span className="stat-pill stat-pill-done">{point.completedCount} done</span>
-                        {point.skippedCount > 0 && <span className="stat-pill stat-pill-skipped">{point.skippedCount} skipped</span>}
-                        {point.averageLatenessMinutes !== null && <span className="stat-pill stat-pill-lateness">avg {formatDuration(point.averageLatenessMinutes)}</span>}
-                      </div>
-                    )}
+                    </div>
+                  );
+                }
+                const point = row.point;
+                const isToday = point.date === bootstrap.todayDate;
+                return (
+                  <div className="activity-row" key={point.date}>
+                    <div><strong>{formatWeekdayLabel(point.date)}</strong></div>
+                    <div className="perday-pills">
+                      {point.completedCount > 0 && <span className="stat-pill stat-pill-done">{point.completedCount} done</span>}
+                      {point.pendingCount > 0 && (
+                        <span className="stat-pill stat-pill-pending">{point.pendingCount} {isToday ? 'pending' : 'missed'}</span>
+                      )}
+                      {point.skippedCount > 0 && <span className="stat-pill stat-pill-skipped">{point.skippedCount} skipped</span>}
+                      {point.averageLatenessMinutes !== null && <span className="stat-pill stat-pill-lateness">avg {formatDuration(point.averageLatenessMinutes)}</span>}
+                    </div>
                   </div>
                 );
               })}
@@ -856,7 +960,7 @@ export default function App() {
                 <div className="settings-slot-card" key={slot.key}>
                   <div className="slot-edit-row">
                     <label className="settings-field">
-                      <span className="slot-edit-label"><strong>{slot.label}</strong> <span className="muted small">· default {slot.defaultTime}</span></span>
+                      <span className="slot-edit-label"><strong>{slot.label}</strong> <span className="muted small">· default {formatTime12(slot.defaultTime)}</span></span>
                       <input
                         type="time"
                         value={slot.time}
@@ -888,7 +992,7 @@ export default function App() {
               ))}
             </div>
             <button className="primary" type="button" onClick={() => void handleBatchSave()} disabled={actionBusy === 'settings-batch'}>
-              {actionBusy === 'settings-batch' ? 'Saving…' : 'Save schedule'}
+              {actionBusy === 'settings-batch' ? 'Saving…' : savedNotice === 'settings-batch' ? 'Saved ✓' : 'Save schedule'}
             </button>
           </section>
 
@@ -905,12 +1009,22 @@ export default function App() {
                   <button className="activity-row activity-row-button" type="button" key={`${item.date}:${item.slotKey}`} onClick={() => void handleSettingsDateChange(item.date)}>
                     <div><strong>{formatDayLabel(item.date)}</strong> · {item.label}</div>
                     <div className="status">
-                      {item.skipped ? `Skipped${item.reason ? `: ${item.reason}` : ''}` : item.overrideTime ? `→ ${item.overrideTime}` : 'Changed'}
+                      {item.skipped ? `Skipped${item.reason ? `: ${item.reason}` : ''}` : item.overrideTime ? `→ ${formatTime12(item.overrideTime)}` : 'Changed'}
                     </div>
                   </button>
                 ))
               )}
             </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Account</h2>
+              <span>{bootstrap.me.name}</span>
+            </div>
+            <button className="ghost" type="button" onClick={() => void handleLogout()} disabled={actionBusy === 'logout'}>
+              {actionBusy === 'logout' ? 'Signing out…' : 'Sign out'}
+            </button>
           </section>
         </>
       ) : null}
@@ -935,17 +1049,23 @@ export default function App() {
             <form className="panel" onSubmit={(e) => void handleLogSeizure(e)}>
               <div className="panel-head compact-head"><h2>Log a seizure</h2></div>
               <div className="settings-slots" style={{ marginTop: '0.9rem' }}>
-                <label className="settings-field">
-                  Date
-                  <input type="date" value={newSeizureDate} max={bootstrap.todayDate} onChange={(e) => setNewSeizureDate(e.target.value)} required />
-                </label>
+                <div className="range-grid">
+                  <label className="settings-field">
+                    Date
+                    <input type="date" value={newSeizureDate} max={bootstrap.todayDate} onChange={(e) => setNewSeizureDate(e.target.value)} required />
+                  </label>
+                  <label className="settings-field">
+                    Time <span className="muted">(optional)</span>
+                    <input type="time" value={newSeizureTime} onChange={(e) => setNewSeizureTime(e.target.value)} />
+                  </label>
+                </div>
                 <label className="settings-field">
                   Notes <span className="muted">(optional)</span>
-                  <input type="text" value={newSeizureNotes} placeholder="Duration, behavior, etc." onChange={(e) => setNewSeizureNotes(e.target.value)} />
+                  <textarea rows={2} value={newSeizureNotes} placeholder="Duration, behavior, etc." onChange={(e) => setNewSeizureNotes(e.target.value)} />
                 </label>
               </div>
               <button className="primary" style={{ marginTop: '0.75rem' }} type="submit" disabled={actionBusy === 'seizure-log'}>
-                {actionBusy === 'seizure-log' ? 'Saving…' : 'Log seizure'}
+                {actionBusy === 'seizure-log' ? 'Saving…' : savedNotice === 'seizure-log' ? 'Logged ✓' : 'Log seizure'}
               </button>
             </form>
 
@@ -958,15 +1078,38 @@ export default function App() {
                 {seizures.events.length === 0 ? (
                   <div className="muted">No episodes logged yet.</div>
                 ) : (
-                  seizures.events.map((evt) => (
-                    <div className="activity-row" key={evt.id}>
-                      <div>
-                        <strong>{formatFullDate(evt.date)}</strong>
-                        {evt.notes ? <span className="muted"> · {evt.notes}</span> : null}
+                  seizures.events.map((evt, index) => {
+                    const previous = seizures.events[index + 1] ?? null;
+                    const gapDays = previous ? daysBetween(previous.date, evt.date) : null;
+                    const meta = [
+                      gapDays === null ? null : gapDays === 0 ? 'same day as previous' : `${gapDays} days after previous`,
+                      evt.loggedByName ? `logged by ${evt.loggedByName}` : null,
+                    ].filter(Boolean).join(' · ');
+                    return (
+                      <div className="activity-row" key={evt.id}>
+                        <div>
+                          <strong>{formatFullDate(evt.date)}</strong>
+                          {evt.time ? <span className="muted"> · {formatTime12(evt.time)}</span> : null}
+                          {evt.notes ? <div className="event-sub">{evt.notes}</div> : null}
+                          {meta ? <div className="event-sub">{meta}</div> : null}
+                        </div>
+                        <button
+                          className={confirmDeleteId === evt.id ? 'ghost small-button event-delete danger-button' : 'ghost small-button event-delete'}
+                          type="button"
+                          disabled={actionBusy === `seizure-delete-${evt.id}`}
+                          onClick={() => {
+                            if (confirmDeleteId === evt.id) {
+                              void handleDeleteSeizure(evt.id);
+                            } else {
+                              setConfirmDeleteId(evt.id);
+                            }
+                          }}
+                        >
+                          {actionBusy === `seizure-delete-${evt.id}` ? 'Deleting…' : confirmDeleteId === evt.id ? 'Confirm delete' : 'Delete'}
+                        </button>
                       </div>
-                      {evt.loggedByName ? <span className="status">{evt.loggedByName}</span> : null}
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </section>
@@ -976,7 +1119,12 @@ export default function App() {
         )
       ) : null}
 
-      {appError ? <div className="toast">{appError}</div> : null}
+      {appError ? (
+        <div className="toast" role="alert">
+          <span>{appError}</span>
+          <button className="toast-close" type="button" aria-label="Dismiss error" onClick={() => setAppError('')}>✕</button>
+        </div>
+      ) : null}
 
       <nav className="bottom-nav">
         <button className={view === 'home' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('home')}>
@@ -1012,14 +1160,19 @@ function Shell({ children }: { children: ReactNode }) {
 function SlotCard({
   slot,
   busy,
+  showDate = false,
   onComplete,
+  onUncomplete,
 }: {
   slot: Slot;
   busy: boolean;
+  showDate?: boolean;
   onComplete: () => void;
+  onUncomplete?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsId = `slot-details-${slot.id}`;
+  const slotName = `${showDate ? `${formatDayLabel(slot.date)} ` : ''}${formatTime12(slot.time)}`;
 
   function toggleDetails() {
     setDetailsOpen((current) => !current);
@@ -1028,9 +1181,12 @@ function SlotCard({
   return (
     <article className={`slot checklist-slot ${slot.status} ${detailsOpen ? 'expanded' : ''}`}>
       <div className="slot-check-row">
-        <button className="slot-toggle" type="button" aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${slot.time}`} aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>
+        <button className="slot-toggle" type="button" aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${slotName}`} aria-expanded={detailsOpen} aria-controls={detailsId} onClick={toggleDetails}>
           <span className="slot-disclosure" aria-hidden="true" />
-          <span className="slot-time">{slot.time}</span>
+          <span className="slot-toggle-text">
+            {showDate ? <span className="slot-date">{formatDayLabel(slot.date)}</span> : null}
+            <span className="slot-time">{formatTime12(slot.time)}</span>
+          </span>
         </button>
         <div className="slot-check-action">
           {slot.status === 'pending' ? (
@@ -1045,6 +1201,11 @@ function SlotCard({
       {detailsOpen ? (
         <div className="slot-details" id={detailsId}>
           <p>{formatSlotDetail(slot)}</p>
+          {slot.status === 'completed' && onUncomplete ? (
+            <button className="ghost small-button slot-undo-button" type="button" disabled={busy} onClick={onUncomplete}>
+              {busy ? 'Undoing…' : 'Undo completion'}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </article>
@@ -1096,11 +1257,49 @@ function formatTimestamp(value: string | null): string {
 }
 
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WEEKDAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function formatDayLabel(iso: string): string {
   const parts = iso.split('-').map(Number);
   if (parts.length !== 3 || !parts[0] || !parts[1]) return iso;
   return `${MONTH_ABBR[parts[1] - 1]} ${parts[2]}`;
+}
+
+function formatWeekdayLabel(iso: string): string {
+  const parts = iso.split('-').map(Number);
+  if (parts.length !== 3 || !parts[0] || !parts[1]) return iso;
+  const weekday = WEEKDAY_ABBR[new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay()];
+  return `${weekday} ${formatDayLabel(iso)}`;
+}
+
+function formatTime12(hhmm: string): string {
+  const [hour, minute] = hhmm.split(':').map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return hhmm;
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${hour >= 12 ? 'PM' : 'AM'}`;
+}
+
+type ByDayRow =
+  | { kind: 'day'; point: StatsData['perDay'][number] }
+  | { kind: 'empty'; startDate: string; endDate: string };
+
+function buildByDayRows(perDay: StatsData['perDay']): ByDayRow[] {
+  const rows: ByDayRow[] = [];
+  for (let i = perDay.length - 1; i >= 0; i -= 1) {
+    const point = perDay[i];
+    const isEmpty = point.completedCount === 0 && point.pendingCount === 0 && point.skippedCount === 0;
+    if (isEmpty) {
+      const last = rows[rows.length - 1];
+      if (last && last.kind === 'empty') {
+        last.startDate = point.date;
+      } else {
+        rows.push({ kind: 'empty', startDate: point.date, endDate: point.date });
+      }
+    } else {
+      rows.push({ kind: 'day', point });
+    }
+  }
+  return rows;
 }
 
 function formatDateRange(start: string, end: string): string {
@@ -1140,8 +1339,7 @@ function formatDuration(minutes: number): string {
 function formatDelta(value: number | null): string {
   if (value === null) return 'Not logged';
   if (value === 0) return 'On time';
-  if (value > 0) return `${value} min late`;
-  return `${Math.abs(value)} min early`;
+  return formatDuration(value);
 }
 
 function HomeIcon() {
