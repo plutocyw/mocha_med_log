@@ -103,6 +103,36 @@ const SLOT_DEFINITIONS = [
   { key: 'night', label: '11:30 PM', time: '23:30' },
 ] as const;
 
+const STATS_DEFAULT_DAY_LIMIT = 7;
+const STATS_MAX_DAY_LIMIT = 92;
+const SLOT_UPSERT_BATCH_SIZE = 90;
+
+const SLOT_UPSERT_SQL = `INSERT INTO slots (
+  id, slot_date, slot_key, slot_label, slot_time, status, created_at, updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+ON CONFLICT(id) DO UPDATE SET
+  slot_label = excluded.slot_label,
+  slot_time = excluded.slot_time,
+  updated_at = excluded.updated_at,
+  status = CASE
+    WHEN slots.status = 'completed' THEN slots.status
+    ELSE excluded.status
+  END,
+  completed_at = CASE
+    WHEN excluded.status = 'skipped' THEN NULL
+    WHEN slots.status = 'completed' THEN slots.completed_at
+    ELSE NULL
+  END,
+  completed_by_user_id = CASE
+    WHEN excluded.status = 'skipped' THEN NULL
+    WHEN slots.status = 'completed' THEN slots.completed_by_user_id
+    ELSE NULL
+  END,
+  last_notified_at = CASE
+    WHEN excluded.status = 'skipped' THEN NULL
+    ELSE slots.last_notified_at
+  END`;
+
 const jsonHeaders = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -415,7 +445,26 @@ async function statsView(env: Env, url: URL): Promise<Response> {
     return json({ error: 'Stats range is out of bounds.' }, 400);
   }
 
-  const stats = await getStatsData(env.DB, timezone, startDate, endDate);
+  const rawCursor = String(url.searchParams.get('dayCursor') ?? '').trim();
+  if (rawCursor && !isIsoDate(rawCursor)) {
+    return json({ error: 'Invalid stats cursor.' }, 400);
+  }
+  const dayCursor = rawCursor || null;
+
+  const rawLimit = Number(url.searchParams.get('dayLimit') ?? STATS_DEFAULT_DAY_LIMIT);
+  const dayLimit = Number.isFinite(rawLimit)
+    ? Math.min(Math.max(Math.trunc(rawLimit), 1), STATS_MAX_DAY_LIMIT)
+    : STATS_DEFAULT_DAY_LIMIT;
+
+  const stats = await getStatsData(
+    env.DB,
+    timezone,
+    startDate,
+    endDate,
+    todayDate,
+    dayCursor,
+    dayLimit,
+  );
   return json(stats);
 }
 
@@ -918,44 +967,84 @@ async function ensureSlotsForDate(db: D1Database, slotDate: string): Promise<voi
   const now = new Date().toISOString();
   await db.batch(
     effectiveSlots.map((slot) =>
-      db.prepare(
-        `INSERT INTO slots (
-          id, slot_date, slot_key, slot_label, slot_time, status, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-        ON CONFLICT(id) DO UPDATE SET
-          slot_label = excluded.slot_label,
-          slot_time = excluded.slot_time,
-          updated_at = excluded.updated_at,
-          status = CASE
-            WHEN slots.status = 'completed' THEN slots.status
-            ELSE excluded.status
-          END,
-          completed_at = CASE
-            WHEN excluded.status = 'skipped' THEN NULL
-            WHEN slots.status = 'completed' THEN slots.completed_at
-            ELSE NULL
-          END,
-          completed_by_user_id = CASE
-            WHEN excluded.status = 'skipped' THEN NULL
-            WHEN slots.status = 'completed' THEN slots.completed_by_user_id
-            ELSE NULL
-          END,
-          last_notified_at = CASE
-            WHEN excluded.status = 'skipped' THEN NULL
-            ELSE slots.last_notified_at
-          END`,
-      )
-        .bind(
-          `${slotDate}:${slot.key}`,
-          slotDate,
-          slot.key,
-          slot.label,
-          slot.time,
-          slot.skipped ? 'skipped' : 'pending',
-          now,
-        ),
+      db.prepare(SLOT_UPSERT_SQL).bind(
+        `${slotDate}:${slot.key}`,
+        slotDate,
+        slot.key,
+        slot.label,
+        slot.time,
+        slot.skipped ? 'skipped' : 'pending',
+        now,
+      ),
     ),
   );
+}
+
+/**
+ * Materializes any dates in the range that are missing slot rows, using a fixed
+ * number of round trips instead of one `ensureSlotsForDate` call per day. Dates
+ * that already have a full set of slots are left untouched, so the common case
+ * costs three reads and no writes.
+ */
+async function ensureSlotsForRange(
+  db: D1Database,
+  startDate: string,
+  endDate: string,
+): Promise<void> {
+  const rangeStart = startDate < TRACKING_START_DATE ? TRACKING_START_DATE : startDate;
+  if (rangeStart > endDate) return;
+
+  const [existing, overrideRows, skippedRows] = await Promise.all([
+    db.prepare(
+      `SELECT slot_date, COUNT(*) AS slot_count
+       FROM slots
+       WHERE slot_date >= ?1 AND slot_date <= ?2
+       GROUP BY slot_date`,
+    )
+      .bind(rangeStart, endDate)
+      .all<{ slot_date: string; slot_count: number }>(),
+    db.prepare(
+      'SELECT slot_date, slot_key, slot_time FROM schedule_overrides WHERE slot_date >= ?1 AND slot_date <= ?2',
+    )
+      .bind(rangeStart, endDate)
+      .all<OverrideRow>(),
+    db.prepare(
+      'SELECT slot_date, slot_key, reason FROM skipped_slots WHERE slot_date >= ?1 AND slot_date <= ?2',
+    )
+      .bind(rangeStart, endDate)
+      .all<SkippedRow>(),
+  ]);
+
+  const slotCounts = new Map(existing.results.map((row) => [row.slot_date, row.slot_count]));
+  const missingDates = enumerateDateRange(rangeStart, endDate).filter(
+    (date) => (slotCounts.get(date) ?? 0) < SLOT_DEFINITIONS.length,
+  );
+  if (!missingDates.length) return;
+
+  const overrides = new Map(
+    overrideRows.results.map((row) => [`${row.slot_date}:${row.slot_key}`, row.slot_time]),
+  );
+  const skipped = new Set(skippedRows.results.map((row) => `${row.slot_date}:${row.slot_key}`));
+  const now = new Date().toISOString();
+
+  const statements = missingDates.flatMap((slotDate) =>
+    SLOT_DEFINITIONS.map((slot) => {
+      const id = `${slotDate}:${slot.key}`;
+      return db.prepare(SLOT_UPSERT_SQL).bind(
+        id,
+        slotDate,
+        slot.key,
+        slot.label,
+        overrides.get(id) ?? slot.time,
+        skipped.has(id) ? 'skipped' : 'pending',
+        now,
+      );
+    }),
+  );
+
+  for (let i = 0; i < statements.length; i += SLOT_UPSERT_BATCH_SIZE) {
+    await db.batch(statements.slice(i, i + SLOT_UPSERT_BATCH_SIZE));
+  }
 }
 
 async function getDayData(db: D1Database, slotDate: string, timezone: string) {
@@ -1143,10 +1232,11 @@ async function getStatsData(
   timezone: string,
   startDate: string,
   endDate: string,
+  todayDate: string,
+  dayCursor: string | null,
+  dayLimit: number,
 ) {
-  for (const date of enumerateDateRange(startDate, endDate)) {
-    await ensureSlotsForDate(db, date);
-  }
+  await ensureSlotsForRange(db, startDate, endDate);
 
   const rows = await db.prepare(
     `SELECT
@@ -1175,7 +1265,15 @@ async function getStatsData(
     byDate.set(row.date, arr);
   }
 
-  const perDay: StatsPoint[] = enumerateDateRange(startDate, endDate).map((date) => {
+  const allDates = enumerateDateRange(startDate, endDate);
+
+  // Only the most recent `dayLimit` days (older than `dayCursor`, when paging
+  // back) are serialized; the summary below still covers the whole range.
+  const pageEndDate = dayCursor && dayCursor < endDate ? dayCursor : endDate;
+  const pageDates =
+    pageEndDate < startDate ? [] : enumerateDateRange(startDate, pageEndDate).slice(-dayLimit);
+
+  const perDay: StatsPoint[] = pageDates.map((date) => {
     const slots = byDate.get(date) ?? [];
     const stats = summarizeDay(slots);
     return {
@@ -1186,6 +1284,10 @@ async function getStatsData(
       averageLatenessMinutes: stats.averageLatenessMinutes,
     };
   });
+
+  const oldestLoadedDate = pageDates[0] ?? null;
+  const nextDayCursor =
+    oldestLoadedDate && oldestLoadedDate > startDate ? addDays(oldestLoadedDate, -1) : null;
 
   const completedByUser = mapped
     .filter((slot) => slot.status === 'completed' && slot.completedByName)
@@ -1199,17 +1301,26 @@ async function getStatsData(
     .filter((slot) => slot.status === 'completed' && slot.latenessMinutes !== null)
     .map((slot) => slot.latenessMinutes as number);
 
+  const totalCompleted = mapped.filter((slot) => slot.status === 'completed').length;
+  const missedCount = mapped.filter(
+    (slot) => slot.status === 'pending' && slot.date < todayDate,
+  ).length;
+
   return {
     timezone,
     startDate,
     endDate,
     perDay,
+    totalDays: allDates.length,
+    nextDayCursor,
     userBreakdown: Object.entries(completedByUser)
       .map(([name, completedCount]) => ({ name, completedCount }))
       .sort((a, b) => b.completedCount - a.completedCount),
     summary: {
-      totalCompleted: mapped.filter((slot) => slot.status === 'completed').length,
+      totalCompleted,
       totalSkipped: mapped.filter((slot) => slot.status === 'skipped').length,
+      missedCount,
+      dueTotal: totalCompleted + missedCount,
       averageLatenessMinutes: allLateness.length
         ? Math.round(allLateness.reduce((sum, value) => sum + value, 0) / allLateness.length)
         : null,

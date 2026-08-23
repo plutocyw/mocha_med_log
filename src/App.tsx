@@ -2,6 +2,8 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 
 type View = 'home' | 'stats' | 'settings' | 'health';
 
+const STATS_DAY_PAGE_SIZE = 7;
+
 const STATS_PRESETS: Array<{ id: string; label: string; days: number | null }> = [
   { id: '7d', label: '7 days', days: 7 },
   { id: '30d', label: '30 days', days: 30 },
@@ -90,9 +92,13 @@ type StatsData = {
     name: string;
     completedCount: number;
   }>;
+  totalDays: number;
+  nextDayCursor: string | null;
   summary: {
     totalCompleted: number;
     totalSkipped: number;
+    missedCount: number;
+    dueTotal: number;
     averageLatenessMinutes: number | null;
     bestLatenessMinutes: number | null;
     worstLatenessMinutes: number | null;
@@ -175,6 +181,7 @@ export default function App() {
   const [statsRange, setStatsRange] = useState({ startDate: '', endDate: '' });
   const [statsPreset, setStatsPreset] = useState<string>('all');
   const [statsCustomOpen, setStatsCustomOpen] = useState(false);
+  const [statsStale, setStatsStale] = useState(true);
   const [loginError, setLoginError] = useState('');
   const [appError, setAppError] = useState('');
   const [password, setPassword] = useState('');
@@ -223,15 +230,9 @@ export default function App() {
     [bootstrap],
   );
 
-  const adherence = useMemo(() => {
-    if (!stats || !bootstrap) return null;
-    const missedCount = stats.perDay.reduce(
-      (sum, point) => sum + (point.date < bootstrap.todayDate ? point.pendingCount : 0),
-      0,
-    );
-    const dueTotal = stats.summary.totalCompleted + missedCount;
-    return { missedCount, dueTotal };
-  }, [stats, bootstrap]);
+  const adherence = stats
+    ? { missedCount: stats.summary.missedCount, dueTotal: stats.summary.dueTotal }
+    : null;
 
   async function initialize() {
     setLoading(true);
@@ -275,11 +276,20 @@ export default function App() {
     return (await response.json()) as SettingsData;
   }
 
-  async function fetchStats(startDate: string, endDate: string): Promise<StatsData> {
-    const response = await fetch(
-      `/api/stats?start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}`,
-      { headers: { accept: 'application/json' } },
-    );
+  async function fetchStats(
+    startDate: string,
+    endDate: string,
+    dayCursor?: string | null,
+  ): Promise<StatsData> {
+    const params = new URLSearchParams({
+      start: startDate,
+      end: endDate,
+      dayLimit: String(STATS_DAY_PAGE_SIZE),
+    });
+    if (dayCursor) params.set('dayCursor', dayCursor);
+    const response = await fetch(`/api/stats?${params.toString()}`, {
+      headers: { accept: 'application/json' },
+    });
     if (!response.ok) throw new Error('Failed to load stats.');
     return (await response.json()) as StatsData;
   }
@@ -371,8 +381,8 @@ export default function App() {
       endDate: data.todayDate,
     });
     setNewSeizureDate(data.todayDate);
-    const statsData = await fetchStats(data.startDate, data.todayDate);
-    setStats(statsData);
+    setStats(null);
+    setStatsStale(true);
     setAppError('');
   }
 
@@ -384,6 +394,7 @@ export default function App() {
     setSettingsDrafts([]);
     setSettingsRange({ startDate: '', endDate: '' });
     setStats(null);
+    setStatsStale(true);
     setStatsRange({ startDate: '', endDate: '' });
     setSeizures(null);
     setNewSeizureDate('');
@@ -479,8 +490,7 @@ export default function App() {
       const dayResponse = await fetchDay(selectedDate || bootstrap.todayDate);
       setDay(dayResponse.day);
       setBootstrap((prev) => prev ? { ...prev, overdue: prev.overdue.map((s) => (s.id === slot.id ? slot : s)) } : prev);
-      const statsData = await fetchStats(statsRange.startDate, statsRange.endDate);
-      setStats(statsData);
+      setStatsStale(true);
       setAppError('');
     } catch (error) {
       console.error(error);
@@ -513,10 +523,48 @@ export default function App() {
     try {
       const data = await fetchStats(startDate, endDate);
       setStats(data);
+      setStatsStale(false);
       setAppError('');
     } catch (error) {
       console.error(error);
       setAppError('Unable to load stats for that range.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function loadStats() {
+    if (!bootstrap) return;
+    if (stats && !statsStale) return;
+    if (actionBusy === 'stats') return;
+    const startDate = statsRange.startDate || bootstrap.startDate;
+    const endDate = statsRange.endDate || bootstrap.todayDate;
+    setActionBusy('stats');
+    try {
+      const data = await fetchStats(startDate, endDate);
+      setStats(data);
+      setStatsStale(false);
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to load stats.');
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function loadMoreStatsDays() {
+    if (!stats || !stats.nextDayCursor) return;
+    setActionBusy('stats-more');
+    try {
+      const data = await fetchStats(stats.startDate, stats.endDate, stats.nextDayCursor);
+      setStats((prev) =>
+        prev ? { ...data, perDay: [...data.perDay, ...prev.perDay] } : data,
+      );
+      setAppError('');
+    } catch (error) {
+      console.error(error);
+      setAppError('Unable to load more days.');
     } finally {
       setActionBusy(null);
     }
@@ -888,7 +936,9 @@ export default function App() {
           <section className="panel">
             <div className="panel-head">
               <h2>By Day</h2>
-              <span>{stats.perDay.length} days · latest first</span>
+              <span>
+                {stats.perDay.length} of {stats.totalDays} days · latest first
+              </span>
             </div>
             <div className="activity">
               {buildByDayRows(stats.perDay).map((row) => {
@@ -917,8 +967,25 @@ export default function App() {
                 );
               })}
             </div>
+            {stats.nextDayCursor ? (
+              <button
+                type="button"
+                className="load-more-button"
+                disabled={actionBusy === 'stats-more'}
+                onClick={() => void loadMoreStatsDays()}
+              >
+                {actionBusy === 'stats-more' ? 'Loading…' : `Load ${STATS_DAY_PAGE_SIZE} more days`}
+              </button>
+            ) : null}
           </section>
         </>
+      ) : null}
+
+      {view === 'stats' && !stats ? (
+        <section className="panel">
+          <div className="panel-head"><h2>Stats</h2></div>
+          <p className="muted">Loading…</p>
+        </section>
       ) : null}
 
       {view === 'settings' && settings ? (
@@ -1131,7 +1198,7 @@ export default function App() {
           <HomeIcon />
           <span>Home</span>
         </button>
-        <button className={view === 'stats' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => setView('stats')}>
+        <button className={view === 'stats' ? 'bottom-nav-button active' : 'bottom-nav-button'} type="button" onClick={() => { setView('stats'); void loadStats(); }}>
           <StatsIcon />
           <span>Stats</span>
         </button>
