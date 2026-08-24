@@ -401,9 +401,7 @@ async function dayView(
     return json({ error: 'Date is out of range.' }, 400);
   }
 
-  if (requestedDate >= TRACKING_START_DATE) {
-    await ensureSlotsForDate(env.DB, requestedDate);
-  }
+  await ensureSlotsForRange(env.DB, requestedDate, requestedDate);
 
   const day = await getDayData(env.DB, requestedDate, timezone);
 
@@ -532,7 +530,7 @@ async function saveSettingsSlot(request: Request, env: Env): Promise<Response> {
       .run();
   }
 
-  await ensureSlotsForDate(env.DB, slotDate);
+  await ensureSlotsForRange(env.DB, slotDate, slotDate, { force: true });
 
   const settings = await getSettingsData(env.DB, slotDate, timezone, todayDate);
   const day = await getDayData(env.DB, slotDate, timezone);
@@ -588,9 +586,10 @@ async function saveBatchSettings(request: Request, env: Env): Promise<Response> 
         reason: slot.reason ? String(slot.reason).trim() : null,
       });
     }
-
-    await ensureSlotsForDate(env.DB, date);
   }
+
+  // One forced pass over the whole range, rather than a re-apply per date.
+  await ensureSlotsForRange(env.DB, startDate, endDate, { force: true });
 
   const settings = await getSettingsData(env.DB, startDate, timezone, todayDate);
   return json({ settings });
@@ -948,48 +947,33 @@ async function disableSubscriptionById(db: D1Database, id: string): Promise<void
     .run();
 }
 
+/**
+ * Keeps yesterday/today/tomorrow materialized. This runs on every cron tick, so
+ * it must not write when the schedule is already settled — `ensureSlotsForRange`
+ * skips dates that already have a full slot set, making the steady state three
+ * reads and zero writes.
+ */
 async function ensureScheduleWindow(db: D1Database, now: Date, timezone: string): Promise<void> {
-  const dates = [
+  await ensureSlotsForRange(
+    db,
     getOffsetLocalDate(now, timezone, -1),
-    getLocalDateTime(now, timezone).date,
     getOffsetLocalDate(now, timezone, 1),
-  ].filter((value) => value >= TRACKING_START_DATE);
-
-  for (const date of dates) {
-    await ensureSlotsForDate(db, date);
-  }
-}
-
-async function ensureSlotsForDate(db: D1Database, slotDate: string): Promise<void> {
-  if (slotDate < TRACKING_START_DATE) return;
-
-  const effectiveSlots = await getEffectiveSlotsForDate(db, slotDate);
-  const now = new Date().toISOString();
-  await db.batch(
-    effectiveSlots.map((slot) =>
-      db.prepare(SLOT_UPSERT_SQL).bind(
-        `${slotDate}:${slot.key}`,
-        slotDate,
-        slot.key,
-        slot.label,
-        slot.time,
-        slot.skipped ? 'skipped' : 'pending',
-        now,
-      ),
-    ),
   );
 }
 
 /**
- * Materializes any dates in the range that are missing slot rows, using a fixed
- * number of round trips instead of one `ensureSlotsForDate` call per day. Dates
- * that already have a full set of slots are left untouched, so the common case
- * costs three reads and no writes.
+ * Materializes slot rows for a date range in a fixed number of round trips.
+ *
+ * By default this only touches dates that are missing slots, so read paths can
+ * call it freely without generating writes. Write paths that have just changed
+ * an override or skip must pass `force` to re-apply the schedule to dates whose
+ * rows already exist.
  */
 async function ensureSlotsForRange(
   db: D1Database,
   startDate: string,
   endDate: string,
+  options: { force?: boolean } = {},
 ): Promise<void> {
   const rangeStart = startDate < TRACKING_START_DATE ? TRACKING_START_DATE : startDate;
   if (rangeStart > endDate) return;
@@ -1016,10 +1000,10 @@ async function ensureSlotsForRange(
   ]);
 
   const slotCounts = new Map(existing.results.map((row) => [row.slot_date, row.slot_count]));
-  const missingDates = enumerateDateRange(rangeStart, endDate).filter(
-    (date) => (slotCounts.get(date) ?? 0) < SLOT_DEFINITIONS.length,
+  const staleDates = enumerateDateRange(rangeStart, endDate).filter(
+    (date) => options.force || (slotCounts.get(date) ?? 0) < SLOT_DEFINITIONS.length,
   );
-  if (!missingDates.length) return;
+  if (!staleDates.length) return;
 
   const overrides = new Map(
     overrideRows.results.map((row) => [`${row.slot_date}:${row.slot_key}`, row.slot_time]),
@@ -1027,7 +1011,7 @@ async function ensureSlotsForRange(
   const skipped = new Set(skippedRows.results.map((row) => `${row.slot_date}:${row.slot_key}`));
   const now = new Date().toISOString();
 
-  const statements = missingDates.flatMap((slotDate) =>
+  const statements = staleDates.flatMap((slotDate) =>
     SLOT_DEFINITIONS.map((slot) => {
       const id = `${slotDate}:${slot.key}`;
       return db.prepare(SLOT_UPSERT_SQL).bind(
