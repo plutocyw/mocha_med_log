@@ -910,9 +910,18 @@ async function sendPush(
       return true;
     }
     if (response.status === 404 || response.status === 410 || (response.status === 400 && responseText.includes('VapidPkHashMismatch'))) {
+      console.warn(
+        `Push subscription disabled: status=${response.status} host=${new URL(subscription.endpoint).host} body=${responseText.slice(0, 200)}`,
+      );
       await disableSubscriptionById(env.DB, subscription.id);
       return false;
     }
+    // Without the status here a rejection is indistinguishable from a silent
+    // drop, which is what made "only the morning reminder arrives" so hard to
+    // pin down. Rate limiting in particular (429) only shows up this way.
+    console.warn(
+      `Push send rejected: status=${response.status} host=${new URL(subscription.endpoint).host} body=${responseText.slice(0, 200)}`,
+    );
     await markSubscriptionFailure(env.DB, subscription.id);
     return false;
   } catch (error) {
