@@ -10,6 +10,7 @@ interface Env {
   VAPID_SUBJECT: string;
   TIMEZONE?: string;
   REMINDER_INTERVAL_MINUTES?: string;
+  REMINDER_WINDOW_HOURS?: string;
   // Local testing only (.dev.vars). Never set in production.
   DEV_AUTH_BYPASS?: string;
 }
@@ -95,6 +96,11 @@ const COOKIE_NAME = 'mocha_med_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const DEFAULT_TIMEZONE = 'America/Los_Angeles';
 const DEFAULT_REMINDER_INTERVAL_MINUTES = 5;
+// How long past its scheduled time a dose keeps generating reminders. Sized to
+// fit inside the smallest gap in the schedule (7h) so reminders for one dose
+// cannot bleed into the next. A dose past this window still counts as missed in
+// Stats and still appears in the overdue list; it just stops pushing.
+const DEFAULT_REMINDER_WINDOW_HOURS = 6;
 const TRACKING_START_DATE = '2026-06-08';
 const MEDICATION_START_DATE = '2026-05-25';
 const SLOT_DEFINITIONS = [
@@ -813,15 +819,26 @@ async function runReminderSweep(env: Env, now: Date): Promise<void> {
   await ensureScheduleWindow(env.DB, now, timezone);
 
   const local = getLocalDateTime(now, timezone);
+
+  // A missed dose stays 'pending' forever, so without a lower bound this picks
+  // up every dose ever skipped and re-notifies it on each sweep, indefinitely.
+  // Only remind within a window after the scheduled time.
+  const cutoff = getLocalDateTime(
+    new Date(now.getTime() - getReminderWindowHours(env) * 3_600_000),
+    timezone,
+  );
+
   const dueSlots = await env.DB.prepare(
     `SELECT id, slot_date, slot_key, slot_label, slot_time, status, completed_at, NULL AS completed_by_name, last_notified_at
      FROM slots
      WHERE status = 'pending'
        AND slot_date >= ?1
-       AND (slot_date < ?2 OR (slot_date = ?2 AND slot_time <= ?3))
-     ORDER BY slot_date ASC, slot_time ASC`,
+       AND (slot_date > ?1 OR slot_time >= ?2)
+       AND (slot_date < ?3 OR (slot_date = ?3 AND slot_time <= ?4))
+     ORDER BY slot_date ASC, slot_time ASC
+     LIMIT 12`,
   )
-    .bind(TRACKING_START_DATE, local.date, local.time)
+    .bind(cutoff.date, cutoff.time, local.date, local.time)
     .all<SlotRow>();
 
   if (!dueSlots.results.length) {
@@ -1460,6 +1477,11 @@ function getTimezone(env: Env): string {
 function getReminderIntervalMinutes(env: Env): number {
   const raw = Number(env.REMINDER_INTERVAL_MINUTES ?? DEFAULT_REMINDER_INTERVAL_MINUTES);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REMINDER_INTERVAL_MINUTES;
+}
+
+function getReminderWindowHours(env: Env): number {
+  const raw = Number(env.REMINDER_WINDOW_HOURS ?? DEFAULT_REMINDER_WINDOW_HOURS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REMINDER_WINDOW_HOURS;
 }
 
 function shouldSendReminder(lastSentAt: string | null, now: Date, intervalMs: number): boolean {
