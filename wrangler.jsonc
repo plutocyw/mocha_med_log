@@ -27,7 +27,7 @@
   "vars": {
     "TIMEZONE": "America/Los_Angeles",
     "REMINDER_INTERVAL_MINUTES": "5",
-    "REMINDER_WINDOW_HOURS": "6"
+    "REMINDER_WINDOW_HOURS": "1"
   },
   "triggers": {
     "crons": ["*/5 * * * *"]

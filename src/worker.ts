@@ -96,11 +96,10 @@ const COOKIE_NAME = 'mocha_med_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const DEFAULT_TIMEZONE = 'America/Los_Angeles';
 const DEFAULT_REMINDER_INTERVAL_MINUTES = 5;
-// How long past its scheduled time a dose keeps generating reminders. Sized to
-// fit inside the smallest gap in the schedule (7h) so reminders for one dose
-// cannot bleed into the next. A dose past this window still counts as missed in
-// Stats and still appears in the overdue list; it just stops pushing.
-const DEFAULT_REMINDER_WINDOW_HOURS = 6;
+// How long past its scheduled time a dose keeps generating reminders. A dose
+// past this window still counts as missed in Stats and still appears in the
+// overdue list; it just stops pushing.
+const DEFAULT_REMINDER_WINDOW_HOURS = 1;
 const TRACKING_START_DATE = '2026-06-08';
 const MEDICATION_START_DATE = '2026-05-25';
 const SLOT_DEFINITIONS = [
