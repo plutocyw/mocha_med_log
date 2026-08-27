@@ -627,8 +627,7 @@ async function savePushSubscription(
       user_agent = excluded.user_agent,
       updated_at = excluded.updated_at,
       disabled_at = NULL,
-      failure_count = 0,
-      last_failure_at = NULL`,
+      failure_count = 0`,
   )
     .bind(
       id,
@@ -933,14 +932,20 @@ async function sendPush(
 
 async function sendSlotReminder(
   env: Env,
-  slot: Pick<SlotRow, 'id' | 'slot_date' | 'slot_label' | 'slot_time'>,
+  slot: Pick<SlotRow, 'id' | 'slot_date' | 'slot_key' | 'slot_label' | 'slot_time'>,
   subscription: SubscriptionRow,
 ): Promise<boolean> {
   return sendPush(env, subscription, {
     title: 'Mocha medication due',
     body: `${slot.slot_label} dose for ${slot.slot_date} is still waiting to be marked complete.`,
     tag: `slot-${slot.id}`,
-    topic: slot.id.replace(/[^A-Za-z0-9]/g, '').slice(0, 32),
+    // APNs rejects a Topic longer than ~16 chars with 400 BadWebPushTopic even
+    // though RFC 8030 allows 32, and it is the collapse topic that decides
+    // whether a reconnecting device sees the reminder. "2026-08-27:afternoon"
+    // stripped to "20260827afternoon" is 17 chars, so the 4:30 dose was the one
+    // slot whose reminders Apple silently refused while FCM accepted them.
+    // Keep this compact and fixed-width: YYMMDD + the slot key's initial.
+    topic: `${slot.slot_date.replace(/-/g, '').slice(2)}${slot.slot_key[0]}`,
     requireInteraction: true,
     renotify: true,
     url: '/',
