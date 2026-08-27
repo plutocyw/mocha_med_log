@@ -944,8 +944,9 @@ async function sendSlotReminder(
     // whether a reconnecting device sees the reminder. "2026-08-27:afternoon"
     // stripped to "20260827afternoon" is 17 chars, so the 4:30 dose was the one
     // slot whose reminders Apple silently refused while FCM accepted them.
-    // Keep this compact and fixed-width: YYMMDD + the slot key's initial.
-    topic: `${slot.slot_date.replace(/-/g, '').slice(2)}${slot.slot_key[0]}`,
+    // Keep it compact and fixed-width: the scheduled date and time, e.g.
+    // "202608271630" (12 chars).
+    topic: `${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`,
     requireInteraction: true,
     renotify: true,
     url: '/',
