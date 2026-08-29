@@ -756,9 +756,12 @@ async function notifySlotCompleted(
       title: `✅ ${actorName} fed Mocha`,
       body: `${slot.slot_label} dose logged at ${formatClockLabel(local.time)}.`,
       tag: `done-${slotId}`,
-      // Prefixed so a completion never collapses that slot's pending reminder.
-      // "done" + date + time is 16 chars, a legal base64 length.
-      topic: pushTopic(`done${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`),
+      // 12 chars, matching the only topic length directly observed working on
+      // APNs: YYMMDD + HHMM + "dn". Distinct from the reminder topic for the
+      // same slot, so a completion never collapses a pending reminder.
+      topic: pushTopic(
+        `${slot.slot_date.replace(/-/g, '').slice(2)}${slot.slot_time.replace(':', '')}dn`,
+      ),
       urgency: 'high',
       renotify: false,
       url: '/',
