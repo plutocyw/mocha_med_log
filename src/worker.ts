@@ -718,21 +718,20 @@ async function completeSlot(
   // request is the one that actually completed the slot. Gating on it keeps a
   // double-tap or a re-complete from sending a second notification.
   if (result.meta.changes > 0) {
-    ctx.waitUntil(notifySlotCompleted(env, slotId, session.uid, session.name, new Date(now)));
+    ctx.waitUntil(notifySlotCompleted(env, slotId, session.name, new Date(now)));
   }
 
   return slotResponse(env, slotId);
 }
 
 /**
- * One-off "someone logged this dose" push. Goes to everyone except the person
- * who logged it — their own device buzzing tells them nothing. Unlike a
- * reminder this is never repeated.
+ * One-off "someone logged this dose" push. Goes to every active subscription,
+ * including the person who logged it, so both devices show the same record of
+ * who fed Mocha and when. Unlike a reminder this is never repeated.
  */
 async function notifySlotCompleted(
   env: Env,
   slotId: string,
-  actorUserId: string,
   actorName: string,
   completedAt: Date,
 ): Promise<void> {
@@ -740,9 +739,8 @@ async function notifySlotCompleted(
     env.DB.prepare(
       `SELECT id, endpoint, p256dh, auth
        FROM push_subscriptions
-       WHERE disabled_at IS NULL AND user_id != ?1`,
+       WHERE disabled_at IS NULL`,
     )
-      .bind(actorUserId)
       .all<SubscriptionRow>(),
     env.DB.prepare('SELECT slot_date, slot_time, slot_label FROM slots WHERE id = ?1')
       .bind(slotId)
