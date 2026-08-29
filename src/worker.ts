@@ -756,14 +756,28 @@ async function notifySlotCompleted(
       title: `✅ ${actorName} fed Mocha`,
       body: `${slot.slot_label} dose logged at ${formatClockLabel(local.time)}.`,
       tag: `done-${slotId}`,
-      // Prefixed so a completion never collapses that slot's pending reminder,
-      // and short enough for APNs (13 chars).
-      topic: `d${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`,
+      // Prefixed so a completion never collapses that slot's pending reminder.
+      // "done" + date + time is 16 chars, a legal base64 length.
+      topic: pushTopic(`done${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`),
       urgency: 'high',
       renotify: false,
       url: '/',
     });
   }
+}
+
+/**
+ * APNs validates the RFC 8030 Topic as decodable base64url, not just as a
+ * string over that alphabet. Base64 packs 3 bytes into 4 characters, so an
+ * unpadded encoding is never 1 character past a multiple of 4 — a 13- or
+ * 17-character topic is not a legal base64 length and comes back as
+ * 400 BadWebPushTopic even though the 32-char maximum is nowhere near.
+ * That is what silently killed the 4:30 reminder ("20260827afternoon", 17)
+ * and the first completion push ("d202608282330", 13).
+ */
+function pushTopic(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9\-_]/g, '').slice(0, 32);
+  return cleaned.length % 4 === 1 ? `${cleaned}0` : cleaned;
 }
 
 function formatClockLabel(time: string): string {
@@ -980,14 +994,17 @@ async function sendPush(
     // Without the status here a rejection is indistinguishable from a silent
     // drop, which is what made "only the morning reminder arrives" so hard to
     // pin down. Rate limiting in particular (429) only shows up this way.
-    console.warn(
-      `Push send rejected: status=${response.status} host=${new URL(subscription.endpoint).host} body=${responseText.slice(0, 200)}`,
-    );
-    await markSubscriptionFailure(env.DB, subscription.id);
+    const reason = `status=${response.status} topic=${message.topic ?? '-'} body=${responseText.slice(0, 160)}`;
+    console.warn(`Push send rejected: host=${new URL(subscription.endpoint).host} ${reason}`);
+    await markSubscriptionFailure(env.DB, subscription.id, reason);
     return false;
   } catch (error) {
     console.error('Push send failed', error);
-    await markSubscriptionFailure(env.DB, subscription.id);
+    await markSubscriptionFailure(
+      env.DB,
+      subscription.id,
+      `threw topic=${message.topic ?? '-'} ${error instanceof Error ? error.message : String(error)}`,
+    );
     return false;
   }
 }
@@ -1006,25 +1023,29 @@ async function sendSlotReminder(
     // whether a reconnecting device sees the reminder. "2026-08-27:afternoon"
     // stripped to "20260827afternoon" is 17 chars, so the 4:30 dose was the one
     // slot whose reminders Apple silently refused while FCM accepted them.
-    // Keep it compact and fixed-width: the scheduled date and time, e.g.
-    // "202608271630" (12 chars).
-    topic: `${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`,
+    // The scheduled date and time, e.g. "202608271630" (12 chars).
+    topic: pushTopic(`${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`),
     requireInteraction: true,
     renotify: true,
     url: '/',
   });
 }
 
-async function markSubscriptionFailure(db: D1Database, id: string): Promise<void> {
+async function markSubscriptionFailure(
+  db: D1Database,
+  id: string,
+  reason: string,
+): Promise<void> {
   const now = new Date().toISOString();
   await db.prepare(
     `UPDATE push_subscriptions
      SET failure_count = failure_count + 1,
          last_failure_at = ?1,
+         last_failure_reason = ?2,
          updated_at = ?1
-     WHERE id = ?2`,
+     WHERE id = ?3`,
   )
-    .bind(now, id)
+    .bind(now, reason.slice(0, 300), id)
     .run();
 }
 
