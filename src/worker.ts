@@ -144,11 +144,11 @@ const jsonHeaders = {
 };
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname.startsWith('/api/')) {
-      return handleApiRequest(request, env, url);
+      return handleApiRequest(request, env, url, ctx);
     }
 
     return env.ASSETS.fetch(request);
@@ -159,7 +159,12 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-async function handleApiRequest(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleApiRequest(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+): Promise<Response> {
   try {
     if (request.method === 'GET' && url.pathname === '/api/auth/state') {
       return authState(request, env);
@@ -233,7 +238,7 @@ async function handleApiRequest(request: Request, env: Env, url: URL): Promise<R
 
     const completeMatch = url.pathname.match(/^\/api\/slots\/([^/]+)\/complete$/);
     if (request.method === 'POST' && completeMatch) {
-      return completeSlot(env, session, decodeURIComponent(completeMatch[1]));
+      return completeSlot(env, session, decodeURIComponent(completeMatch[1]), ctx);
     }
 
     const uncompleteMatch = url.pathname.match(/^\/api\/slots\/([^/]+)\/uncomplete$/);
@@ -693,9 +698,10 @@ async function completeSlot(
   env: Env,
   session: SessionPayload & { uid: string; name: string },
   slotId: string,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const now = new Date().toISOString();
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `UPDATE slots
       SET status = 'completed',
           completed_at = ?1,
@@ -708,7 +714,65 @@ async function completeSlot(
     .bind(now, session.uid, slotId, TRACKING_START_DATE)
     .run();
 
+  // The UPDATE is guarded on status = 'pending', so changes > 0 means this
+  // request is the one that actually completed the slot. Gating on it keeps a
+  // double-tap or a re-complete from sending a second notification.
+  if (result.meta.changes > 0) {
+    ctx.waitUntil(notifySlotCompleted(env, slotId, session.uid, session.name, new Date(now)));
+  }
+
   return slotResponse(env, slotId);
+}
+
+/**
+ * One-off "someone logged this dose" push. Goes to everyone except the person
+ * who logged it — their own device buzzing tells them nothing. Unlike a
+ * reminder this is never repeated.
+ */
+async function notifySlotCompleted(
+  env: Env,
+  slotId: string,
+  actorUserId: string,
+  actorName: string,
+  completedAt: Date,
+): Promise<void> {
+  const [subscriptions, slot] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, endpoint, p256dh, auth
+       FROM push_subscriptions
+       WHERE disabled_at IS NULL AND user_id != ?1`,
+    )
+      .bind(actorUserId)
+      .all<SubscriptionRow>(),
+    env.DB.prepare('SELECT slot_date, slot_time, slot_label FROM slots WHERE id = ?1')
+      .bind(slotId)
+      .first<{ slot_date: string; slot_time: string; slot_label: string }>(),
+  ]);
+
+  if (!subscriptions.results.length || !slot) return;
+
+  const local = getLocalDateTime(completedAt, getTimezone(env));
+
+  for (const subscription of subscriptions.results) {
+    await sendPush(env, subscription, {
+      title: `✅ ${actorName} fed Mocha`,
+      body: `${slot.slot_label} dose logged at ${formatClockLabel(local.time)}.`,
+      tag: `done-${slotId}`,
+      // Prefixed so a completion never collapses that slot's pending reminder,
+      // and short enough for APNs (13 chars).
+      topic: `d${slot.slot_date.replace(/-/g, '')}${slot.slot_time.replace(':', '')}`,
+      urgency: 'high',
+      renotify: false,
+      url: '/',
+    });
+  }
+}
+
+function formatClockLabel(time: string): string {
+  const [hourText, minuteText] = time.split(':');
+  const hour = Number(hourText);
+  const suffix = hour < 12 ? 'AM' : 'PM';
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${minuteText} ${suffix}`;
 }
 
 async function uncompleteSlot(env: Env, slotId: string): Promise<Response> {
