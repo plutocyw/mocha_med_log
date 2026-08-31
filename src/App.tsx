@@ -1,5 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 
+import Confetti from './Confetti';
+
 type View = 'home' | 'stats' | 'settings' | 'health';
 
 const STATS_DAY_PAGE_SIZE = 7;
@@ -182,6 +184,7 @@ export default function App() {
   const [statsPreset, setStatsPreset] = useState<string>('all');
   const [statsCustomOpen, setStatsCustomOpen] = useState(false);
   const [statsStale, setStatsStale] = useState(true);
+  const [confettiBurst, setConfettiBurst] = useState(0);
   const [loginError, setLoginError] = useState('');
   const [appError, setAppError] = useState('');
   const [password, setPassword] = useState('');
@@ -491,6 +494,7 @@ export default function App() {
       setDay(dayResponse.day);
       setBootstrap((prev) => prev ? { ...prev, overdue: prev.overdue.map((s) => (s.id === slot.id ? slot : s)) } : prev);
       setStatsStale(true);
+      if (action === 'complete') setConfettiBurst((count) => count + 1);
       setAppError('');
     } catch (error) {
       console.error(error);
@@ -1211,6 +1215,8 @@ export default function App() {
           <span>Settings</span>
         </button>
       </nav>
+
+      <Confetti burstKey={confettiBurst} />
     </Shell>
   );
 }
