@@ -18,6 +18,10 @@
       "database_id": "b0111dd4-ec0f-4feb-863f-870bf0619a60"
     }
   ],
+  "ratelimits": [
+    { "name": "LOGIN_IP", "namespace_id": "6001", "simple": { "limit": 8, "period": 60 } },
+    { "name": "LOGIN_ALL", "namespace_id": "6002", "simple": { "limit": 40, "period": 60 } }
+  ],
   "routes": [
     {
       "pattern": "mocha-med-log.ipluto.net",

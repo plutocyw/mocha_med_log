@@ -6,6 +6,8 @@ interface Env {
   SESSION_SECRET: string;
   SITE_PASSWORD: string;
   TURNSTILE_SECRET: string;
+  LOGIN_IP: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  LOGIN_ALL: { limit(options: { key: string }): Promise<{ success: boolean }> };
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string;
   VAPID_SUBJECT: string;
@@ -144,15 +146,33 @@ const jsonHeaders = {
   'cache-control': 'no-store',
 };
 
+const SECURITY_HEADERS: Record<string, string> = {
+  'Content-Security-Policy': [
+    "default-src 'self'", "script-src 'self' https://challenges.cloudflare.com",
+    'frame-src https://challenges.cloudflare.com', "connect-src 'self' https://challenges.cloudflare.com https:",
+    "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: https:",
+    "font-src 'self' data:", "media-src 'self' blob: https:", "worker-src 'self' blob:", "manifest-src 'self'",
+    "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'", "object-src 'none'",
+  ].join('; '),
+  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+};
+
+function secure(response: Response): Response {
+  const secured = new Response(response.body, response);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) secured.headers.set(name, value);
+  return secured;
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
-
-    if (url.pathname.startsWith('/api/')) {
-      return handleApiRequest(request, env, url, ctx);
-    }
-
-    return env.ASSETS.fetch(request);
+    const response = url.pathname.startsWith('/api/')
+      ? await handleApiRequest(request, env, url, ctx)
+      : await env.ASSETS.fetch(request);
+    return secure(response);
   },
 
   async scheduled(controller, env, ctx): Promise<void> {
@@ -285,6 +305,14 @@ function isDevAuthBypass(env: Env): boolean {
 }
 
 async function unlock(request: Request, env: Env): Promise<Response> {
+  const clientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  const [perIp, global] = await Promise.all([
+    env.LOGIN_IP.limit({ key: clientIp }),
+    env.LOGIN_ALL.limit({ key: 'login' }),
+  ]);
+  if (!perIp.success || !global.success) {
+    return json({ error: 'Too many attempts. Wait a minute and try again.' }, 429);
+  }
   const body = await request.json<{ password?: string; turnstileToken?: string }>().catch(() => null);
   const password = String(body?.password ?? '');
   const turnstileToken = String(body?.turnstileToken ?? '');
@@ -293,8 +321,7 @@ async function unlock(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Password is required.' }, 400);
   }
 
-  const clientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-  if (!(await turnstileOk(turnstileToken, env.TURNSTILE_SECRET, clientIp))) {
+  if (!(await turnstileOk(turnstileToken, env.TURNSTILE_SECRET, clientIp, new URL(request.url).hostname))) {
     return json({ error: 'Human verification failed. Please try again.' }, 403);
   }
 
@@ -1610,7 +1637,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function turnstileOk(token: string, secret: string, clientIp: string): Promise<boolean> {
+async function turnstileOk(token: string, secret: string, clientIp: string, hostname: string): Promise<boolean> {
   if (!secret || !token) return false;
   try {
     const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
@@ -1619,8 +1646,8 @@ async function turnstileOk(token: string, secret: string, clientIp: string): Pro
       body: new URLSearchParams({ secret, response: token, remoteip: clientIp }),
     });
     if (!response.ok) return false;
-    const result = await response.json<{ success?: boolean }>();
-    return result.success === true;
+    const result = await response.json<{ success?: boolean; hostname?: string; action?: string }>();
+    return result.success === true && result.hostname === hostname && result.action === 'password-login';
   } catch {
     return false;
   }
