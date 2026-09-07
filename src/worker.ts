@@ -95,7 +95,7 @@ type StatsPoint = {
   averageLatenessMinutes: number | null;
 };
 
-const COOKIE_NAME = 'mocha_med_session';
+const COOKIE_NAME = '__Host-mocha_med_session';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const DEFAULT_TIMEZONE = 'America/Los_Angeles';
 const DEFAULT_REMINDER_INTERVAL_MINUTES = 5;
@@ -158,6 +158,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
 function secure(response: Response): Response {
@@ -187,6 +188,14 @@ async function handleApiRequest(
   ctx: ExecutionContext,
 ): Promise<Response> {
   try {
+    const origin = request.headers.get('Origin');
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && origin && origin !== url.origin) {
+      return json({ error: 'Invalid request origin.' }, 403);
+    }
+    const contentLength = Number(request.headers.get('Content-Length') ?? '0');
+    if (Number.isFinite(contentLength) && contentLength > 1024 * 1024) {
+      return json({ error: 'Request body is too large.' }, 413);
+    }
     if (request.method === 'GET' && url.pathname === '/api/auth/state') {
       return authState(request, env);
     }
@@ -278,7 +287,7 @@ async function authState(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
 
   if (!session) {
-    if (isDevAuthBypass(env)) {
+    if (isDevAuthBypass(request, env)) {
       const users = await listUsers(env.DB);
       return json({ stage: 'identity', users });
     }
@@ -292,7 +301,7 @@ async function authState(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  if (session.unlocked || isDevAuthBypass(env)) {
+  if (session.unlocked || isDevAuthBypass(request, env)) {
     const users = await listUsers(env.DB);
     return json({ stage: 'identity', users });
   }
@@ -300,11 +309,15 @@ async function authState(request: Request, env: Env): Promise<Response> {
   return json({ stage: 'password' });
 }
 
-function isDevAuthBypass(env: Env): boolean {
-  return env.DEV_AUTH_BYPASS === 'true';
+function isDevAuthBypass(request: Request, env: Env): boolean {
+  const hostname = new URL(request.url).hostname;
+  return env.DEV_AUTH_BYPASS === 'true' && (hostname === 'localhost' || hostname === '127.0.0.1');
 }
 
 async function unlock(request: Request, env: Env): Promise<Response> {
+  if (!env.SITE_PASSWORD || !env.SESSION_SECRET || !env.TURNSTILE_SECRET) {
+    return json({ error: 'Login service is not configured.' }, 503);
+  }
   const clientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
   const [perIp, global] = await Promise.all([
     env.LOGIN_IP.limit({ key: clientIp }),
@@ -325,7 +338,7 @@ async function unlock(request: Request, env: Env): Promise<Response> {
     return json({ error: 'Human verification failed. Please try again.' }, 403);
   }
 
-  if (!timingSafeEqual(password, env.SITE_PASSWORD)) {
+  if (!(await passwordMatches(password, env.SITE_PASSWORD))) {
     return json({ error: 'Incorrect site password.' }, 401);
   }
 
@@ -348,7 +361,7 @@ async function unlock(request: Request, env: Env): Promise<Response> {
 
 async function login(request: Request, env: Env): Promise<Response> {
   const session = await readSession(request, env);
-  if (!session?.unlocked && !isDevAuthBypass(env)) {
+  if (!session?.unlocked && !isDevAuthBypass(request, env)) {
     return json({ error: 'Enter the site password first.' }, 401);
   }
 
@@ -539,6 +552,9 @@ async function saveSettingsSlot(request: Request, env: Env): Promise<Response> {
   if (time && !isTimeString(time)) {
     return json({ error: 'Time must be in HH:MM format.' }, 400);
   }
+  if (reason && reason.length > 300) {
+    return json({ error: 'Reason must be 300 characters or fewer.' }, 400);
+  }
 
   const now = new Date().toISOString();
 
@@ -607,6 +623,10 @@ async function saveBatchSettings(request: Request, env: Env): Promise<Response> 
     return json({ error: 'At least one slot change is required.' }, 400);
   }
 
+  const rangeDays = Math.floor((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1;
+  if (rangeDays > 366 || slots.length > SLOT_DEFINITIONS.length) {
+    return json({ error: 'Batch settings can cover at most 366 days and three slots.' }, 400);
+  }
   const dates = enumerateDateRange(startDate, endDate);
   for (const date of dates) {
     for (const slot of slots) {
@@ -619,6 +639,9 @@ async function saveBatchSettings(request: Request, env: Env): Promise<Response> 
       const time = slot.time === null ? null : String(slot.time ?? '').trim();
       if (time && !isTimeString(time)) {
         return json({ error: `Invalid time for ${slotKey}` }, 400);
+      }
+      if (slot.reason && String(slot.reason).trim().length > 300) {
+        return json({ error: `Reason is too long for ${slotKey}.` }, 400);
       }
 
       await applySlotSetting(env.DB, {
@@ -905,6 +928,9 @@ async function logSeizure(
 
   if (time && !isTimeString(time)) {
     return json({ error: 'Time must be in HH:MM format.' }, 400);
+  }
+  if (notes && notes.length > 2000) {
+    return json({ error: 'Notes must be 2000 characters or fewer.' }, 400);
   }
 
   const id = crypto.randomUUID();
@@ -1512,6 +1538,7 @@ async function applySlotSetting(
 }
 
 async function readSession(request: Request, env: Env): Promise<SessionPayload | null> {
+  if (!env.SESSION_SECRET) return null;
   const token = parseCookies(request.headers.get('cookie'))[COOKIE_NAME];
   if (!token) return null;
 
@@ -1552,6 +1579,15 @@ async function signValue(value: string, secret: string): Promise<string> {
 
   const signature = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(value));
   return encodeBytesBase64Url(new Uint8Array(signature));
+}
+
+async function passwordMatches(given: string, expected: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(given)),
+    crypto.subtle.digest('SHA-256', encoder.encode(expected)),
+  ]);
+  return timingSafeEqual(encodeBytesBase64Url(new Uint8Array(a)), encodeBytesBase64Url(new Uint8Array(b)));
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -1693,7 +1729,9 @@ function dayIndex(value: string): number {
 }
 
 function isIsoDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 function isTimeString(value: string): boolean {
