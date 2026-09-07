@@ -5,6 +5,7 @@ interface Env {
   DB: D1Database;
   SESSION_SECRET: string;
   SITE_PASSWORD: string;
+  TURNSTILE_SECRET: string;
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string;
   VAPID_SUBJECT: string;
@@ -284,11 +285,17 @@ function isDevAuthBypass(env: Env): boolean {
 }
 
 async function unlock(request: Request, env: Env): Promise<Response> {
-  const body = await request.json<{ password?: string }>().catch(() => null);
+  const body = await request.json<{ password?: string; turnstileToken?: string }>().catch(() => null);
   const password = String(body?.password ?? '');
+  const turnstileToken = String(body?.turnstileToken ?? '');
 
   if (!password) {
     return json({ error: 'Password is required.' }, 400);
+  }
+
+  const clientIp = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  if (!(await turnstileOk(turnstileToken, env.TURNSTILE_SECRET, clientIp))) {
+    return json({ error: 'Human verification failed. Please try again.' }, 403);
   }
 
   if (!timingSafeEqual(password, env.SITE_PASSWORD)) {
@@ -1601,6 +1608,22 @@ function timingSafeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+async function turnstileOk(token: string, secret: string, clientIp: string): Promise<boolean> {
+  if (!secret || !token) return false;
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ secret, response: token, remoteip: clientIp }),
+    });
+    if (!response.ok) return false;
+    const result = await response.json<{ success?: boolean }>();
+    return result.success === true;
+  } catch {
+    return false;
+  }
 }
 
 function getLocalDateTime(date: Date, timezone: string): { date: string; time: string } {

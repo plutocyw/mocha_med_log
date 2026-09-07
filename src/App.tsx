@@ -1,6 +1,7 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
 import Confetti from './Confetti';
+import { Turnstile } from './Turnstile';
 
 type View = 'home' | 'stats' | 'settings' | 'health';
 
@@ -188,6 +189,8 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [appError, setAppError] = useState('');
   const [password, setPassword] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const resetTurnstile = useRef<(() => void) | null>(null);
   const [selectedUserId, setSelectedUserId] = useState('');
   const [seizures, setSeizures] = useState<SeizuresData | null>(null);
   const [newSeizureDate, setNewSeizureDate] = useState('');
@@ -421,11 +424,12 @@ export default function App() {
       const response = await fetch('/api/unlock', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, turnstileToken }),
       });
       const data = (await response.json()) as { error?: string };
       if (!response.ok) {
         setLoginError(data.error ?? 'Unable to unlock the app.');
+        resetTurnstile.current?.();
         return;
       }
       const state = await fetchAuthState();
@@ -771,7 +775,8 @@ export default function App() {
                 required
               />
             </label>
-            <button className="primary" type="submit" disabled={loginBusy}>
+            <Turnstile onToken={setTurnstileToken} resetRef={resetTurnstile} />
+            <button className="primary" type="submit" disabled={loginBusy || !turnstileToken}>
               {loginBusy ? 'Checking…' : 'Unlock'}
             </button>
             {loginError ? <p className="error">{loginError}</p> : null}
