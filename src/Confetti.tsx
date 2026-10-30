@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isHalloweenCelebration, createBats, drawBat, BAT_LIFE_MS } from './halloween';
 
 // Pulled from the app's own palette so the burst reads as part of the UI
 // rather than a generic party effect: the browns and cream of the panels,
@@ -48,7 +49,7 @@ function createParticles(width: number, height: number, now: number): Particle[]
 }
 
 /**
- * Fires a one-off confetti burst whenever `burstKey` increases. Renders a
+ * Fires a one-off seasonal celebration whenever `burstKey` increases. Renders a
  * fixed, non-interactive canvas that only paints while a burst is running.
  */
 export default function Confetti({ burstKey }: { burstKey: number }) {
@@ -75,12 +76,23 @@ export default function Confetti({ burstKey }: { burstKey: number }) {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
 
     const start = performance.now();
-    const particles = createParticles(width, height, start);
+    // Decide on each completion, including when the page stays open past midnight.
+    const halloween = isHalloweenCelebration(new Date());
+    const particles = halloween ? [] : createParticles(width, height, start);
+    const bats = halloween ? createBats(width, height, start) : [];
 
     function draw(now: number) {
       if (!canvas || !context) return;
       context.clearRect(0, 0, width, height);
       let alive = 0;
+
+      for (const bat of bats) {
+        const age = now - bat.born;
+        if (age < 0) { alive += 1; continue; }
+        if (age > BAT_LIFE_MS) continue;
+        alive += 1;
+        drawBat(context, bat, age);
+      }
 
       for (const particle of particles) {
         if (now < particle.born) {
